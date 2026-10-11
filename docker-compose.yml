@@ -1,0 +1,76 @@
+# =============================================================================
+# TradeLog 项目 docker-compose.yml
+# 接入总反向代理架构：本文件不映射任何宿主机端口，对外访问由 reverse-proxy 按二级域名转发
+# =============================================================================
+
+services:
+  # MySQL 数据库
+  tradelog-mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-tradelog_password}
+      MYSQL_DATABASE: tradelog_db
+      MYSQL_USER: ${DB_USER:-tradeloguser}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-tradelog_password}
+    # 不映射 3306 到宿主机：backend 通过服务名内网访问
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./backend/database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - meal-log-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 后端服务
+  tradelog-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: production
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DB_HOST: tradelog-mysql
+      DB_PORT: 3306
+      DB_USER: ${DB_USER:-tradeloguser}
+      DB_PASSWORD: ${DB_PASSWORD:-tradelog_password}
+      DB_NAME: tradelog_db
+      JWT_SECRET: ${JWT_SECRET:-your_jwt_secret_key}
+      SMTP_HOST: ${SMTP_HOST:-smtp.163.com}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_TO: ${SMTP_TO:-}
+    # 不映射宿主机端口：仅 frontend 经内网代理访问
+    depends_on:
+      tradelog-mysql:
+        condition: service_healthy
+    networks:
+      - meal-log-network
+
+  # 前端服务
+  tradelog-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: production
+    restart: unless-stopped
+    # 不映射宿主机端口：对外由总反向代理按二级域名转发进来
+    depends_on:
+      - tradelog-backend
+    networks:
+      - meal-log-network
+
+volumes:
+  mysql_data:
+    driver: local
+
+networks:
+  # 共享网络：由第一个业务（MealLog）创建，这里以外部网络方式接入
+  meal-log-network:
+    external: true
