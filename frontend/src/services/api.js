@@ -71,16 +71,23 @@ export const shanghaiNewsApi = {
   batchCreate: (records) => api.post('/shanghai-news/batch', { records }),
   update: (id, data) => api.put(`/shanghai-news/${id}`, data),
   delete: (id) => api.delete(`/shanghai-news/${id}`),
+  scrape: (date) => api.post('/shanghai-news/scrape', {}, { params: date ? { date } : {} }),
+  rescan: (date) => api.post('/shanghai-news/rescan', {}, { params: { date } }),
+  refreshStocks: () => api.post('/shanghai-news/refresh-stocks'),
+  getStockDict: () => api.get('/shanghai-news/stock-dict'),
 }
 
 // ===== 高盛研报 =====
 export const researchReportApi = {
   getList: (params) => api.get('/research-reports', { params }),
+  getDates: (params) => api.get('/research-reports/dates', { params }),
   getById: (id) => api.get(`/research-reports/${id}`),
   create: (data) => api.post('/research-reports', data),
   batchCreate: (records) => api.post('/research-reports/batch', { records }),
   update: (id, data) => api.put(`/research-reports/${id}`, data),
   delete: (id) => api.delete(`/research-reports/${id}`),
+  scrape: (tier = 'all') => api.post('/research-reports/scrape', { tier }),
+  importHistory: () => api.post('/research-reports/import-history'),
 }
 
 // ===== 交易日历 =====
@@ -92,6 +99,16 @@ export const calendarApi = {
   addTradingDays: (startDate, days) =>
     api.get('/calendar/trading-days/add', { params: { start_date: startDate, days } }),
   initCalendar: (year) => api.post('/calendar/init', { year }),
+}
+
+// ===== 市场实时数据 =====
+export const marketApi = {
+  getRealtime: () => api.get('/market/realtime'),
+  getToday: () => api.get('/market/today'),
+  takeSnapshot: () => api.post('/market/snapshot'),
+  getHistory: (date) => api.get(`/market/history/${date}`),
+  getDates: () => api.get('/market/dates'),
+  getAverages: () => api.get('/market/averages'),
 }
 
 export default api

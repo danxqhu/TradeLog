@@ -10,6 +10,7 @@ const PositionAddRecord = require('./PositionAddRecord');
 const ShanghaiNews = require('./ShanghaiNews');
 const ResearchReport = require('./ResearchReport');
 const TradingCalendar = require('./TradingCalendar');
+const MarketSnapshot = require('./MarketSnapshot');
 
 // 模型关联关系
 // Recommendation -> RecommendationTracking (一对多)
@@ -56,4 +57,5 @@ module.exports = {
   ShanghaiNews,
   ResearchReport,
   TradingCalendar,
+  MarketSnapshot,
 };

@@ -2,13 +2,36 @@ const express = require('express');
 const router = express.Router();
 const { Op } = require('sequelize');
 const { ResearchReport } = require('../models');
+const gsScraperService = require('../services/gsScraperService');
+
+// GET /api/research-reports/dates - 获取有数据的日期列表
+router.get('/dates', async (req, res) => {
+  try {
+    const { label } = req.query;
+    const where = {};
+    if (label) where.label = label;
+    
+    const results = await ResearchReport.findAll({
+      where,
+      attributes: [[require('sequelize').fn('DISTINCT', require('sequelize').col('publish_date')), 'date']],
+      raw: true,
+      order: [['publish_date', 'DESC']],
+    });
+    res.json({ data: results.map(r => r.date) });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // GET /api/research-reports - 获取研报列表
 router.get('/', async (req, res) => {
   try {
-    const { source, start_date, end_date, page = 1, pageSize = 20 } = req.query;
+    const { source, label, analyst, date, start_date, end_date, page = 1, pageSize = 20 } = req.query;
     const where = {};
     if (source) where.source = source;
+    if (label) where.label = label;
+    if (analyst) where.analyst = { [Op.like]: `%${analyst}%` };
+    if (date) where.publish_date = date;
     if (start_date && end_date) {
       where.publish_date = { [Op.between]: [start_date, end_date] };
     }
@@ -88,6 +111,37 @@ router.delete('/:id', async (req, res) => {
     }
     await report.destroy();
     res.json({ message: '删除成功' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/research-reports/scrape - 触发抓取
+router.post('/scrape', async (req, res) => {
+  try {
+    const { tier = 'all' } = req.body;
+    console.log(`[API] 手动触发高盛研报抓取 (tier=${tier})`);
+    const result = await gsScraperService.scrapeAndSaveReports({ tier });
+    res.json({
+      success: true,
+      message: `抓取完成：新增 ${result.created} 篇，重复 ${result.skipped} 篇，过滤 ${result.ignored} 篇`,
+      ...result,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/research-reports/import-history - 导入历史数据
+router.post('/import-history', async (req, res) => {
+  try {
+    console.log('[API] 导入高盛研报历史数据...');
+    const result = await gsScraperService.importHistoricalData();
+    res.json({
+      success: true,
+      message: `历史数据导入完成：新增 ${result.created} 篇，跳过 ${result.skipped} 篇`,
+      ...result,
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

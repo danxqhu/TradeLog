@@ -19,12 +19,6 @@ export default function TabBar() {
   const navigate = useNavigate()
   const location = useLocation()
 
-  // 只在主Tab页面显示底部导航
-  const mainPaths = ['/', '/watchlist', '/news', '/features']
-  if (!mainPaths.includes(location.pathname)) {
-    return null
-  }
-
   return (
     <div style={{
       position: 'fixed',

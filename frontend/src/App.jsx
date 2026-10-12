@@ -12,8 +12,9 @@ import VolumeAnalysis from './pages/Volume/Analysis'
 import VolumeRealtime from './pages/Volume/Realtime'
 import Position from './pages/Position'
 import PositionStrategy from './pages/Position/Strategy'
-import ShanghaiNews from './pages/ShanghaiNews'
 import GoldmanSachs from './pages/GoldmanSachs'
+import Shao from './pages/Shao'
+import FinanceReport from './pages/FinanceReport'
 
 function App() {
   return (
@@ -40,8 +41,14 @@ function App() {
           <Route path="/position/strategy/:stockCode" element={<PositionStrategy />} />
 
           {/* 资讯 */}
-          <Route path="/shanghai-news" element={<ShanghaiNews />} />
           <Route path="/goldman-sachs" element={<GoldmanSachs />} />
+          <Route path="/shanghai-news" element={<News />} />
+
+          {/* 邵先生 */}
+          <Route path="/shao" element={<Shao />} />
+
+          {/* 财报分析 */}
+          <Route path="/finance-report" element={<FinanceReport />} />
 
           {/* 默认重定向 */}
           <Route path="*" element={<Navigate to="/" replace />} />

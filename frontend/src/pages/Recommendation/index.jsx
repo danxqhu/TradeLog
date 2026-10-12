@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Card, Tabs, Button, Form, Input, DatePicker, Toast, Tag, Empty, Popup, Space } from 'antd-mobile'
-import { AddOutline } from 'antd-mobile-icons'
+import { Card, Tabs, Button, Form, Input, DatePicker, Toast, Tag, Empty, Popup, Space, NavBar } from 'antd-mobile'
+import { AddOutline, LeftOutline } from 'antd-mobile-icons'
 import { recommendationApi } from '../../services/api'
 import dayjs from 'dayjs'
 
@@ -64,6 +64,7 @@ export default function Recommendation() {
 
   return (
     <div className="page-container">
+      <NavBar backIcon={<LeftOutline />} onBack={() => navigate(-1)}>推荐管理</NavBar>
       <Card
         title="推荐管理"
         extra={

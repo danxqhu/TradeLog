@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { sequelize } = require('./models');
+const { startScheduler } = require('./services/scheduler');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -19,6 +20,7 @@ app.use('/api/positions', require('./routes/positions'));
 app.use('/api/shanghai-news', require('./routes/shanghaiNews'));
 app.use('/api/research-reports', require('./routes/researchReports'));
 app.use('/api/calendar', require('./routes/calendar'));
+app.use('/api/market', require('./routes/market'));
 
 // 健康检查
 app.get('/api/health', (req, res) => {
@@ -41,6 +43,8 @@ async function testConnection() {
     // 同步模型（开发环境使用 alter，生产环境应使用 migration）
     await sequelize.sync({ alter: true });
     console.log('✅ 数据库模型同步完成');
+    // 启动定时任务
+    startScheduler();
   } catch (error) {
     console.error('❌ 数据库连接失败:', error.message);
   }
@@ -48,6 +52,7 @@ async function testConnection() {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 TradeLog 后端服务运行在端口 ${PORT}`);
+  console.log(`📋 版本: v2.0 - 增强上海证券报过滤 (简报/广告/信息披露/公告全面过滤)`);
   testConnection();
 });
 

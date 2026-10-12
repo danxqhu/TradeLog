@@ -273,15 +273,31 @@ python3 shanghai_news_scraper.py --days 3
 
 ---
 
+## 本地开发启动
+
+需要开两个终端窗口分别启动：
+
+**终端 1 - 后端**
+
+```bash
+cd backend && node src/app.js
+```
+
+**终端 2 - 前端**
+
+```bash
+cd frontend && npm run dev
+```
+
+启动后访问 http://localhost:5173
+
+> 注意：后端用 `node` 直启，不用 `npm run dev`（nodemon），避免多进程抢端口冲突。
+
+---
+
 ## 本地开发常用命令
 
 ```bash
-# 前端开发（热更新）
-cd frontend && npm run dev
-
-# 后端开发（nodemon 热更新）
-cd backend && npm run dev
-
 # 前端构建
 cd frontend && npm run build
 
