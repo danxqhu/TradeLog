@@ -27,6 +27,7 @@ export default function GoldmanSachs() {
   const [importing, setImporting] = useState(false)
   const [stockDictInfo, setStockDictInfo] = useState(null)
   const [refreshingStocks, setRefreshingStocks] = useState(false)
+  const [syncProgressInfo, setSyncProgressInfo] = useState(null)
   const [showOnlyCore, setShowOnlyCore] = useState(false)
   const [calendarCollapsed, setCalendarCollapsed] = useState(true)
 
@@ -128,18 +129,48 @@ export default function GoldmanSachs() {
     })
   }
 
-  // 刷新股票库
+  // 刷新股票库（异步轮询，显示进度）
   const handleRefreshStocks = async () => {
     setRefreshingStocks(true)
+    setSyncProgressInfo({ percent: 0, stage: '正在发起同步...' })
     try {
-      const res = await shanghaiNewsApi.refreshStocks()
-      Toast.show({ content: res.message || `已更新 ${res.count} 只股票`, duration: 3000 })
-      const info = await shanghaiNewsApi.getStockDict()
-      setStockDictInfo(info)
+      await shanghaiNewsApi.refreshStocks()
+      // 轮询等待刷新完成，每 2 秒查询一次进度
+      const poll = async (retries = 0) => {
+        if (retries > 90) {
+          Toast.show({ content: '同步超时，请稍后重试', duration: 3000 })
+          setRefreshingStocks(false)
+          setSyncProgressInfo(null)
+          return
+        }
+        await new Promise(r => setTimeout(r, 2000))
+        try {
+          const status = await shanghaiNewsApi.getRefreshStatus()
+          if (status.progress) {
+            setSyncProgressInfo(status.progress)
+          }
+          if (!status.running && status.lastResult) {
+            Toast.show({ content: status.lastResult.message || '同步完成', duration: 4000 })
+            const info = await shanghaiNewsApi.getStockDict()
+            setStockDictInfo(info)
+            setRefreshingStocks(false)
+            setSyncProgressInfo(null)
+          } else if (!status.running && status.lastError) {
+            Toast.show({ content: '同步失败: ' + status.lastError, duration: 4000 })
+            setRefreshingStocks(false)
+            setSyncProgressInfo(null)
+          } else {
+            await poll(retries + 1)
+          }
+        } catch {
+          await poll(retries + 1)
+        }
+      }
+      await poll()
     } catch (err) {
-      Toast.show('刷新失败')
-    } finally {
+      Toast.show('同步失败')
       setRefreshingStocks(false)
+      setSyncProgressInfo(null)
     }
   }
 
@@ -293,24 +324,43 @@ export default function GoldmanSachs() {
 
         {/* 股票库状态 */}
         <div style={{
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-          background: '#f9f9f9', borderRadius: 6, padding: '4px 8px', marginBottom: 8,
+          background: '#f9f9f9', borderRadius: 6, padding: '6px 8px', marginBottom: 8,
           fontSize: 11, color: '#888',
         }}>
-          <span>
-            股票库：{stockDictInfo ? `${stockDictInfo.count} 只` : '未加载'}
-            {stockDictInfo?.updatedAt && ` · 更新于 ${dayjs(stockDictInfo.updatedAt).format('M/D HH:mm')}`}
-          </span>
-          <Button
-            size="mini"
-            fill="none"
-            onClick={handleRefreshStocks}
-            loading={refreshingStocks}
-            disabled={refreshingStocks}
-            style={{ fontSize: 11, padding: '0 4px' }}
-          >
-            {refreshingStocks ? '拉取中...' : '刷新股票库'}
-          </Button>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>
+              股票库：{stockDictInfo ? `${stockDictInfo.count} 只上市` : '未加载'}
+              {stockDictInfo?.delistedCount > 0 && ` / ${stockDictInfo.delistedCount} 只退市`}
+              {stockDictInfo?.updatedAt && ` · 更新于 ${dayjs(stockDictInfo.updatedAt).format('M/D HH:mm')}`}
+            </span>
+            <Button
+              size="mini"
+              fill="none"
+              onClick={handleRefreshStocks}
+              disabled={refreshingStocks}
+              style={{ fontSize: 11, padding: '0 4px' }}
+            >
+              {refreshingStocks ? '同步中...' : '同步股票库'}
+            </Button>
+          </div>
+          {/* 进度条 */}
+          {syncProgressInfo && (
+            <div style={{ marginTop: 4 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                <span style={{ fontSize: 10, color: '#666' }}>{syncProgressInfo.stage}</span>
+                <span style={{ fontSize: 10, color: '#1677ff' }}>{syncProgressInfo.percent}%</span>
+              </div>
+              <div style={{ height: 4, background: '#e0e0e0', borderRadius: 2, overflow: 'hidden' }}>
+                <div style={{
+                  height: '100%',
+                  width: `${syncProgressInfo.percent}%`,
+                  background: '#1677ff',
+                  borderRadius: 2,
+                  transition: 'width 0.3s ease',
+                }} />
+              </div>
+            </div>
+          )}
         </div>
 
         {/* 操作栏 */}

@@ -35,6 +35,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3001
+      TZ: Asia/Shanghai
       DB_HOST: tradelog-mysql
       DB_PORT: 3306
       DB_USER: ${DB_USER:-tradeloguser}
@@ -46,6 +47,10 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_TO: ${SMTP_TO:-}
+    volumes:
+      # 挂载宿主机时间文件（只读），复用宿主机时钟，不在容器内开 NTP
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     # 不映射宿主机端口：仅 frontend 经内网代理访问
     depends_on:
       tradelog-mysql:

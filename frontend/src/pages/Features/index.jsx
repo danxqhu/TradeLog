@@ -4,6 +4,7 @@ import { Card, Dialog, Toast } from 'antd-mobile'
 
 // 默认功能顺序
 const defaultFeatures = [
+  { key: 'lixiang', title: '李享财经', desc: '早盘/午盘推荐', path: '/recommendation?source=李享财经', color: '#1677ff' },
   { key: 'shanghai-news', title: '上海证券报', desc: '每日提到的股票', path: '/shanghai-news', color: '#009688' },
   { key: 'goldman-sachs', title: '高盛研报', desc: '每日研报追踪', path: '/goldman-sachs', color: '#0066cc' },
   { key: 'shao', title: '邵先生', desc: '邵先生专区', path: '/shao', color: '#ff6b81' },
@@ -13,12 +14,11 @@ const defaultFeatures = [
   { key: 'volume-analysis', title: '量能分析', desc: '30日量能平均值', path: '/volume/analysis', color: '#ff8f1f' },
   { key: 'volume-realtime', title: '实时放量缩量', desc: '类似同花顺', path: '/volume/realtime', color: '#e74c3c' },
   { key: 'position', title: '仓位管理', desc: '阶梯式加仓策略', path: '/position', color: '#9c27b0' },
+  { key: 'chip-distribution', title: '筹码分布', desc: '个股筹码结构分析', path: '/chip-distribution', color: '#2196f3' },
+  { key: 'rainbow', title: '七道彩虹', desc: '开发中', path: '/rainbow', color: '#ff4081' },
+  { key: 'email', title: '邮件推送', desc: 'SMTP 通知配置', path: '/email', color: '#8B3A42' },
 ]
 
-// 机构入口（固定顺序）
-const institutions = [
-  { key: 'lixiang', title: '李享财经', desc: '早盘/午盘推荐', path: '/recommendation?source=李享财经', color: '#1677ff' },
-]
 
 export default function Features() {
   const navigate = useNavigate()
@@ -148,15 +148,6 @@ export default function Features() {
 
   return (
     <div className="page-container">
-      {/* 机构入口 */}
-      <Card title="机构" style={{ marginBottom: 12 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
-          {institutions.map(f => (
-            <div key={f.key}>{renderButton(f)}</div>
-          ))}
-        </div>
-      </Card>
-
       {/* 功能模块 */}
       <Card 
         title="功能" 

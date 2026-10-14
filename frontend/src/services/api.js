@@ -35,8 +35,10 @@ export const recommendationApi = {
   update: (id, data) => api.put(`/recommendations/${id}`, data),
   delete: (id) => api.delete(`/recommendations/${id}`),
   getReturns: (id) => api.get(`/recommendations/${id}/returns`),
+  getBestReturn: (id) => api.get(`/recommendations/${id}/best-return`),
   trackReturn: (id, data) => api.post(`/recommendations/${id}/track`, data),
   calculateReturns: (id, data) => api.post(`/recommendations/${id}/calculate-returns`, data),
+  calculateCustom: (id, data) => api.post(`/recommendations/${id}/calculate-custom`, data),
 }
 
 // ===== 量能数据 =====
@@ -56,6 +58,7 @@ export const positionApi = {
   update: (id, data) => api.put(`/positions/${id}`, data),
   addPosition: (id, data) => api.post(`/positions/${id}/add`, data),
   closePosition: (id, data) => api.post(`/positions/${id}/close`, data),
+    deletePosition: (id) => api.delete(`/positions/${id}`),
   getConfig: (id) => api.get(`/positions/${id}/strategy`),
   setConfig: (data) => api.post('/positions/config', data),
   checkAlert: (id, data) => api.post(`/positions/${id}/check-alert`, data),
@@ -71,9 +74,10 @@ export const shanghaiNewsApi = {
   batchCreate: (records) => api.post('/shanghai-news/batch', { records }),
   update: (id, data) => api.put(`/shanghai-news/${id}`, data),
   delete: (id) => api.delete(`/shanghai-news/${id}`),
-  scrape: (date) => api.post('/shanghai-news/scrape', {}, { params: date ? { date } : {} }),
-  rescan: (date) => api.post('/shanghai-news/rescan', {}, { params: { date } }),
+  scrape: (date) => api.post('/shanghai-news/scrape', {}, { params: date ? { date } : {}, timeout: 180000 }),
+  rescan: (date) => api.post('/shanghai-news/rescan', {}, { params: { date }, timeout: 300000 }),
   refreshStocks: () => api.post('/shanghai-news/refresh-stocks'),
+  getRefreshStatus: () => api.get('/shanghai-news/refresh-status'),
   getStockDict: () => api.get('/shanghai-news/stock-dict'),
 }
 
@@ -109,6 +113,9 @@ export const marketApi = {
   getHistory: (date) => api.get(`/market/history/${date}`),
   getDates: () => api.get('/market/dates'),
   getAverages: () => api.get('/market/averages'),
+  getAveragesTrend: (limit) => api.get('/market/averages-trend', { params: { limit } }),
+  getExchangeDaily: (limit) => api.get('/market/exchange-daily', { params: { limit } }),
+  refreshAverages: () => api.post('/market/refresh-averages'),
 }
 
 export default api

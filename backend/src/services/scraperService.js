@@ -5,8 +5,13 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { Op } = require('sequelize');
-const { ShanghaiNews } = require('../models');
+const { execFile } = require('child_process');
+const path = require('path');
+const { ShanghaiNews, NewsStock } = require('../models');
 const { detectStocks } = require('./stockDictionary');
+
+// Python 流水线脚本路径
+const PIPELINE_SCRIPT = path.join(__dirname, '../../scripts/news_stock_pipeline.py');
 
 const EPAPER_URL = 'http://paper.cnstock.com';
 const CHANNEL_URL = 'https://www.cnstock.com/channel/10232';
@@ -16,6 +21,20 @@ const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
   'Accept-Language': 'zh-CN,zh;q=0.9',
 };
+
+// ===== 抓取进度 SSE 推送（与 market.js 同一模式） =====
+const scrapeProgress = {
+  stage: '', percent: 0, current: 0, total: 0, message: '',
+};
+const progressClients = new Set();
+
+function broadcastProgress(event, data) {
+  Object.assign(scrapeProgress, data);
+  const msg = `event: ${event}\ndata: ${JSON.stringify(scrapeProgress)}\n\n`;
+  for (const client of progressClients) {
+    client.write(msg);
+  }
+}
 
 // 安全请求
 async function safeGet(url, timeout = 15000) {
@@ -324,12 +343,23 @@ async function cleanupOldData(days = 90) {
 async function scrapeAndSave(targetDate) {
   console.log(`开始抓取上海证券报电子报${targetDate ? ` (${targetDate})` : ' (最新)'}...`);
 
+  // 重置进度
+  broadcastProgress('progress', {
+    stage: '正在清理旧数据...', percent: 5, current: 0, total: 0, message: '',
+  });
+
   // 1. 先清理旧数据（确保数据库干净）
   await cleanupOldData(90);
   const cleanResult = await cleanupNonEPaper();
 
   // 2. 抓取电子报
+  broadcastProgress('progress', { stage: '正在抓取文章列表...', percent: 15 });
   const epaperArticles = await scrapeEPaper(targetDate);
+
+  broadcastProgress('progress', {
+    stage: '正在保存到数据库...', percent: 30,
+    message: `抓取到 ${epaperArticles.length} 篇文章`,
+  });
 
   // 3. 删除该日期的旧数据（重新抓取时用新数据完全替换，修复版面标签等）
   const scrapeDate = epaperArticles[0]?.publish_date || targetDate;
@@ -350,41 +380,227 @@ async function scrapeAndSave(targetDate) {
   const cleanResult2 = await cleanupNonEPaper();
   const totalCleaned = cleanResult.deleted + cleanResult2.deleted;
 
-  // 6. 返回结果
+  // 6. 自动抓取文章正文（body 字段）
+  let bodyResult = { fetched: 0, failed: 0 };
+  try {
+    // 先查询 body 为空的文章数量
+    const pendingCount = await ShanghaiNews.count({
+      where: {
+        publish_date: scrapeDate,
+        body: null,
+        url: { [Op.ne]: null },
+      },
+    });
+    broadcastProgress('progress', {
+      stage: '正在抓取文章正文...', percent: 40,
+      current: 0, total: pendingCount,
+      message: pendingCount > 0 ? `共 ${pendingCount} 篇需要抓取正文` : '所有文章已有正文',
+    });
+
+    if (pendingCount > 0) {
+      bodyResult = await fetchBodies(scrapeDate, (bodyProgress) => {
+        const pct = 40 + Math.round((bodyProgress.current / Math.max(bodyProgress.total, 1)) * 55);
+        broadcastProgress('progress', {
+          stage: '正在抓取文章正文...',
+          percent: pct,
+          current: bodyProgress.current,
+          total: bodyProgress.total,
+          message: `正在抓取第 ${bodyProgress.current}/${bodyProgress.total} 篇...`,
+        });
+      });
+    }
+    console.log(`正文抓取完成：成功 ${bodyResult.fetched}，失败 ${bodyResult.failed}`);
+  } catch (bodyErr) {
+    console.error('正文抓取失败（不影响整体流程）:', bodyErr.message);
+  }
+
+  // 7. 返回结果
   const result = {
     total: epaperArticles.length,
     created,
     skipped,
     cleaned: totalCleaned,
     replaced,
+    bodyFetched: bodyResult.fetched,
+    bodyFailed: bodyResult.failed,
     date: scrapeDate || new Date().toISOString().slice(0, 10),
   };
+
+  // 通知完成
+  broadcastProgress('done', {
+    stage: '抓取完成', percent: 100, current: 0, total: 0,
+    message: `新增 ${created} 篇，正文 ${bodyResult.fetched} 篇`,
+  });
 
   console.log('抓取完成:', result);
   return result;
 }
 
-// 重新扫描已有文章，补充股票识别
+// 重新扫描已有文章，使用 Python jieba 匹配（title + body 合并分词）
+// 匹配结果双写同步：mentioned_stocks JSON + news_stock 关联表
 async function rescanStocks(date) {
-  const where = date ? { publish_date: date } : {};
-  const articles = await ShanghaiNews.findAll({ where, raw: true });
-  let updated = 0;
+  console.log(`开始 jieba 股票匹配${date ? ` (日期: ${date})` : ' (全部文章)'}...`);
 
-  for (const article of articles) {
-    const stocks = detectStocks(article.title + ' ' + (article.content || ''));
-    const currentStocks = article.mentioned_stocks || [];
-    // 只有当识别结果与现有不同时才更新
-    if (JSON.stringify(stocks) !== JSON.stringify(currentStocks)) {
-      await ShanghaiNews.update(
-        { mentioned_stocks: stocks },
-        { where: { id: article.id } }
-      );
-      updated++;
-    }
-  }
+  return new Promise((resolve, reject) => {
+    const args = [PIPELINE_SCRIPT, '--match'];
+    if (date) args.push('--date', date);
 
-  console.log(`重新扫描完成：${articles.length} 篇文章，${updated} 篇更新了股票信息`);
-  return { total: articles.length, updated };
+    let stdout = '';
+    let stderr = '';
+    const proc = execFile('python3', args, {
+      timeout: 300000,
+      env: { ...process.env },
+      cwd: path.join(__dirname, '../..'),
+    });
+
+    proc.stdout.on('data', (d) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d) => {
+      stderr += d.toString();
+      const line = d.toString().trim();
+      if (line) console.log(`  [jieba] ${line}`);
+    });
+
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        console.error('[rescanStocks] Python 脚本失败，退出码:', code);
+        return reject(new Error(`Python 脚本失败: ${stderr.slice(-200)}`));
+      }
+      try {
+        const result = JSON.parse(stdout.trim());
+        const matchResult = result.match || {};
+        console.log(`jieba 匹配完成：${matchResult.total || 0} 篇文章，${matchResult.updated || 0} 篇已更新`);
+        resolve({
+          total: matchResult.total || 0,
+          updated: matchResult.updated || 0,
+          details: matchResult.details || [],
+        });
+      } catch (e) {
+        console.error('[rescanStocks] JSON 解析失败:', e.message);
+        reject(new Error('Python 脚本输出解析失败'));
+      }
+    });
+
+    proc.on('error', (err) => {
+      console.error('[rescanStocks] Python 进程启动失败:', err.message);
+      reject(err);
+    });
+  });
+}
+
+// 抓取文章正文（只处理 body 为空的记录，调用 Python 脚本）
+// onProgress: 可选回调 (progress) => void，实时推送每篇文章的抓取进度
+async function fetchBodies(date, onProgress) {
+  console.log(`开始抓取文章正文${date ? ` (日期: ${date})` : ''}...`);
+
+  return new Promise((resolve, reject) => {
+    const args = [PIPELINE_SCRIPT, '--fetch'];
+    if (date) args.push('--date', date);
+
+    let stdout = '';
+    let stderrBuf = ''; // 行缓冲，用于解析多行 stderr
+    let bodyTotal = 0;
+    let bodyCurrent = 0;
+    const proc = execFile('python3', args, {
+      timeout: 600000,
+      env: { ...process.env },
+      cwd: path.join(__dirname, '../..'),
+    });
+
+    proc.stdout.on('data', (d) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d) => {
+      const raw = d.toString();
+      stderrBuf += raw;
+
+      // 按行解析（一个 chunk 可能包含多行）
+      const lines = stderrBuf.split('\n');
+      stderrBuf = lines.pop(); // 最后一段可能不完整，留到下次
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        console.log(`  [fetch] ${trimmed}`);
+
+        // 解析总数：📝 开始抓取正文（共 N 篇 body 为空的文章）...
+        const totalMatch = trimmed.match(/共 (\d+) 篇/);
+        if (totalMatch) {
+          bodyTotal = parseInt(totalMatch[1]);
+          if (onProgress) onProgress({ current: 0, total: bodyTotal });
+        }
+
+        // 解析每篇进度：[N/TOTAL] news_id=...
+        const progressMatch = trimmed.match(/^\[(\d+)\/(\d+)\]/);
+        if (progressMatch) {
+          bodyCurrent = parseInt(progressMatch[1]);
+          bodyTotal = parseInt(progressMatch[2]);
+          if (onProgress) onProgress({ current: bodyCurrent, total: bodyTotal });
+        }
+      }
+    });
+
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        console.error('[fetchBodies] Python 脚本失败，退出码:', code);
+        return reject(new Error(`Python 脚本失败: ${stderrBuf.slice(-200)}`));
+      }
+      try {
+        const result = JSON.parse(stdout.trim());
+        const fetchResult = result.fetch || {};
+        console.log(`正文抓取完成：成功 ${fetchResult.fetched || 0}，失败 ${fetchResult.failed || 0}`);
+        resolve({
+          fetched: fetchResult.fetched || 0,
+          failed: fetchResult.failed || 0,
+        });
+      } catch (e) {
+        console.error('[fetchBodies] JSON 解析失败:', e.message);
+        reject(new Error('Python 脚本输出解析失败'));
+      }
+    });
+
+    proc.on('error', (err) => {
+      console.error('[fetchBodies] Python 进程启动失败:', err.message);
+      reject(err);
+    });
+  });
+}
+
+// 完整流水线：先抓取正文，再运行 jieba 匹配
+async function runPipeline(date) {
+  console.log(`\u{1f680} 开始完整流水线${date ? ` (日期: ${date})` : ''}...`);
+
+  return new Promise((resolve, reject) => {
+    const args = [PIPELINE_SCRIPT, '--fetch', '--match'];
+    if (date) args.push('--date', date);
+
+    let stdout = '';
+    let stderr = '';
+    const proc = execFile('python3', args, {
+      timeout: 600000,
+      env: { ...process.env },
+      cwd: path.join(__dirname, '../..'),
+    });
+
+    proc.stdout.on('data', (d) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d) => {
+      stderr += d.toString();
+      const line = d.toString().trim();
+      if (line) console.log(`  [pipeline] ${line}`);
+    });
+
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        return reject(new Error(`流水线脚本失败: ${stderr.slice(-200)}`));
+      }
+      try {
+        const result = JSON.parse(stdout.trim());
+        console.log('流水线完成:', JSON.stringify(result));
+        resolve(result);
+      } catch (e) {
+        reject(new Error('流水线输出解析失败'));
+      }
+    });
+
+    proc.on('error', (err) => reject(err));
+  });
 }
 
 // 清理不符合条件的文章（非电子报 + 信息披露/广告/公告/简报 + 版面概览误入）
@@ -425,5 +641,9 @@ module.exports = {
   saveToDB,
   cleanupOldData,
   rescanStocks,
+  fetchBodies,
+  runPipeline,
   cleanupNonEPaper,
+  progressClients,
+  broadcastProgress,
 };

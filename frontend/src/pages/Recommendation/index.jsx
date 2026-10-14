@@ -1,60 +1,48 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Card, Tabs, Button, Form, Input, DatePicker, Toast, Tag, Empty, Popup, Space, NavBar } from 'antd-mobile'
+import { Tabs, Button, Empty, NavBar } from 'antd-mobile'
 import { AddOutline, LeftOutline } from 'antd-mobile-icons'
 import { recommendationApi } from '../../services/api'
-import dayjs from 'dayjs'
+import AddForm from './AddForm'
 
 export default function Recommendation() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const [activeTab, setActiveTab] = useState('morning')
+  const [activeTab, setActiveTabState] = useState(() => sessionStorage.getItem('rec_tab') || 'morning')
+  const setActiveTab = (tab) => {
+    setActiveTabState(tab)
+    sessionStorage.setItem('rec_tab', tab)
+  }
   const [recommendations, setRecommendations] = useState([])
   const [showAdd, setShowAdd] = useState(false)
-  const [form] = Form.useForm()
+  const [sortBy, setSortBy] = useState('time_desc')
+
+  const sortOptions = [
+    { label: '最新', value: 'time_desc' },
+    { label: '最早', value: 'time_asc' },
+    { label: '仅看持仓↑', value: 'position_asc' },
+    { label: '仅看持仓↓', value: 'position_desc' },
+  ]
 
   useEffect(() => {
-    const source = searchParams.get('source')
-    if (source) fetchRecommendations(source)
-    else fetchRecommendations()
-  }, [activeTab])
+    fetchRecommendations()
+  }, [activeTab, sortBy])
 
-  const fetchRecommendations = async (source) => {
+  const fetchRecommendations = async () => {
     try {
-      // 模拟数据
-      const mockData = [
-        { id: 1, stock_code: '600519', stock_name: '贵州茅台', type: 'morning', source: '李享财经', recommend_date: '2026-10-11', recommend_time: '09:35', recommend_price: 1850.00, current_price: 1892.00 },
-        { id: 2, stock_code: '000858', stock_name: '五粮液', type: 'morning', source: '李享财经', recommend_date: '2026-10-10', recommend_time: '09:42', recommend_price: 155.00, current_price: 153.20 },
-        { id: 3, stock_code: '300750', stock_name: '宁德时代', type: 'afternoon', source: '李享财经', recommend_date: '2026-10-11', recommend_time: '13:15', recommend_price: 212.00, current_price: 218.50 },
-        { id: 4, stock_code: '002594', stock_name: '比亚迪', type: 'afternoon', source: '李享财经', recommend_date: '2026-10-10', recommend_time: '13:05', recommend_price: 268.00, current_price: 272.80 },
-      ]
-      const filtered = mockData.filter(r => r.type === activeTab)
-      if (source) {
-        setRecommendations(filtered.filter(r => r.source === source))
-      } else {
-        setRecommendations(filtered)
-      }
+      const params = { type: activeTab, sort: sortBy }
+      const source = searchParams.get('source')
+      if (source) params.source = source
+      const res = await recommendationApi.getList(params)
+      setRecommendations(res.data || [])
     } catch (error) {
       console.error('获取推荐列表失败:', error)
     }
   }
 
-  const handleAdd = async (values) => {
-    try {
-      const data = {
-        ...values,
-        type: activeTab,
-        recommend_date: dayjs(values.recommend_date).format('YYYY-MM-DD'),
-        recommend_time: dayjs(values.recommend_time).format('HH:mm'),
-      }
-      // await recommendationApi.create(data)
-      Toast.show('添加成功')
-      setShowAdd(false)
-      form.resetFields()
-      fetchRecommendations()
-    } catch (error) {
-      Toast.show('添加失败')
-    }
+  const handleAddSuccess = () => {
+    setShowAdd(false)
+    fetchRecommendations()
   }
 
   const calcReturn = (rec) => {
@@ -63,91 +51,158 @@ export default function Recommendation() {
   }
 
   return (
-    <div className="page-container">
-      <NavBar backIcon={<LeftOutline />} onBack={() => navigate(-1)}>推荐管理</NavBar>
-      <Card
-        title="推荐管理"
-        extra={
-          <Button size="small" color="primary" fill="none" onClick={() => setShowAdd(true)}>
+    <div className="page-container" style={{ '--adm-color-primary': '#8B3A42' }}>
+      <style>{`
+        .rec-reasons { display: none; }
+        .rec-reasons-inline { display: inline; margin-left: 4px; }
+        @media (max-width: 540px) {
+          .rec-reasons { display: flex !important; margin-top: 2px; }
+          .rec-reasons-inline { display: none !important; }
+        }
+      `}</style>
+      <NavBar backIcon={<LeftOutline />} onBack={() => navigate(-1)} style={{ fontSize: 14 }}>推荐管理</NavBar>
+
+      <div style={{ padding: '0 12px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0' }}>
+          <Tabs activeKey={activeTab} onChange={setActiveTab} style={{ '--title-font-size': '13px' }}>
+            <Tabs.Tab key="morning" title="早盘" />
+            <Tabs.Tab key="afternoon" title="午盘" />
+          </Tabs>
+          <Button size="mini" color="primary" fill="outline" onClick={() => setShowAdd(true)} style={{ fontSize: 12, padding: '2px 10px' }}>
             <AddOutline /> 添加
           </Button>
-        }
-      >
-        <Tabs activeKey={activeTab} onChange={setActiveTab}>
-          <Tabs.Tab key="morning" title="早盘推荐" />
-          <Tabs.Tab key="afternoon" title="午盘推荐" />
-        </Tabs>
-
-        <div style={{ marginTop: 12 }}>
-          {recommendations.length === 0 ? (
-            <Empty description={`暂无${activeTab === 'morning' ? '早盘' : '午盘'}推荐`} />
-          ) : (
-            recommendations.map(rec => (
-              <div
-                key={rec.id}
-                className="card"
-                style={{ marginBottom: 8, cursor: 'pointer' }}
-                onClick={() => navigate(`/recommendation/${rec.id}`)}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <div>
-                    <span style={{ fontWeight: 600, fontSize: 16 }}>{rec.stock_name}</span>
-                    <span style={{ fontSize: 12, color: '#999', marginLeft: 8 }}>{rec.stock_code}</span>
-                  </div>
-                  <Tag color={rec.type === 'morning' ? 'warning' : 'success'}>
-                    {rec.type === 'morning' ? '早盘' : '午盘'}
-                  </Tag>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#666' }}>
-                  <span>{rec.recommend_date} {rec.recommend_time}</span>
-                  <span>推荐价: ¥{rec.recommend_price}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
-                  <span style={{ fontSize: 13 }}>
-                    现价: <strong>¥{rec.current_price}</strong>
-                  </span>
-                  <Tag
-                    color={calcReturn(rec) >= 0 ? 'error' : 'success'}
-                    style={{ fontSize: 14, fontWeight: 600 }}
-                  >
-                    {calcReturn(rec) >= 0 ? '+' : ''}{calcReturn(rec)}%
-                  </Tag>
-                </div>
-              </div>
-            ))
-          )}
         </div>
-      </Card>
 
-      {/* 添加推荐弹窗 */}
-      <Popup visible={showAdd} onMaskClick={() => setShowAdd(false)} bodyStyle={{ padding: 16, borderTopLeftRadius: 12, borderTopRightRadius: 12, minHeight: '60vh' }}>
-        <h3 style={{ marginBottom: 16 }}>添加{activeTab === 'morning' ? '早盘' : '午盘'}推荐</h3>
-        <Form form={form} onFinish={handleAdd} layout="vertical">
-          <Form.Item name="stock_code" label="股票代码" rules={[{ required: true }]}>
-            <Input placeholder="如: 600519" />
-          </Form.Item>
-          <Form.Item name="stock_name" label="股票名称" rules={[{ required: true }]}>
-            <Input placeholder="如: 贵州茅台" />
-          </Form.Item>
-          <Form.Item name="recommend_date" label="推荐日期" rules={[{ required: true }]}>
-            <DatePicker mode="date" style={{ width: '100%' }}>
-              {(value) => value ? dayjs(value).format('YYYY-MM-DD') : '请选择日期'}
-            </DatePicker>
-          </Form.Item>
-          <Form.Item name="recommend_time" label="推荐时间" rules={[{ required: true }]}>
-            <DatePicker mode="time" format="HH:mm" style={{ width: '100%' }}>
-              {(value) => value ? dayjs(value).format('HH:mm') : '请选择时间'}
-            </DatePicker>
-          </Form.Item>
-          <Form.Item name="recommend_price" label="推荐价格" rules={[{ required: true }]}>
-            <Input type="number" placeholder="推荐时的价格" />
-          </Form.Item>
-          <Form.Item name="notes" label="备注">
-            <Input.TextArea placeholder="推荐理由等" rows={2} />
-          </Form.Item>
-          <Button block type="submit" color="primary" size="large">保存</Button>
-        </Form>
-      </Popup>
+        {/* 排序按钮 */}
+        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+          {sortOptions.map(opt => (
+            <span
+              key={opt.value}
+              onClick={() => setSortBy(opt.value)}
+              style={{
+                fontSize: 11, padding: '2px 8px', borderRadius: 10, cursor: 'pointer',
+                background: sortBy === opt.value ? '#8B3A42' : '#f5f5f5',
+                color: sortBy === opt.value ? '#fff' : '#666',
+              }}
+            >
+              {opt.label}
+            </span>
+          ))}
+        </div>
+
+        {recommendations.length === 0 ? (
+          <Empty description={`暂无${activeTab === 'morning' ? '早盘' : '午盘'}推荐`} style={{ marginTop: 40 }} />
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {recommendations.map(rec => {
+              const ret = calcReturn(rec)
+              const isUp = Number(ret) >= 0
+              const recReasons = rec.reasons || []
+              return (
+                <div
+                  key={rec.id}
+                  onClick={() => navigate(`/recommendation/${rec.id}`)}
+                  style={{
+                    padding: '4px 4px',
+                    borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {/* 股票名+代码 */}
+                    <div style={{ flex: '0 0 auto', maxWidth: '30%' }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {rec.stock_name}
+                        <span style={{ fontSize: 10, color: '#999', marginLeft: 3, fontWeight: 400 }}>{rec.stock_code}</span>
+                      </div>
+                    </div>
+                    {/* 推荐信息 */}
+                    <div style={{ flex: '1 1 auto', fontSize: 10, color: '#666', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      <span style={{ color: '#999' }}>荐</span>¥{rec.recommend_price}
+                      <span style={{ color: '#ccc', margin: '0 3px' }}>|</span>
+                      <span style={{ color: '#999' }}>{rec.recommend_date.slice(5)} {rec.recommend_time}</span>
+                      {/* 电脑端：理由跟在时间后面，同一行 */}
+                      {recReasons.length > 0 && (
+                        <span className="rec-reasons-inline">
+                          {recReasons.map((reason, idx) => (
+                            <span key={idx} style={{
+                              fontSize: 9, color: '#8B3A42', background: '#F5E6E8',
+                              borderRadius: 3, padding: '0 4px', marginLeft: 3,
+                            }}>{reason}</span>
+                          ))}
+                        </span>
+                      )}
+                      {rec.position && (
+                        <span style={{
+                          fontSize: 9, color: '#8B3A42', border: '1px solid #8B3A42',
+                          borderRadius: 3, padding: '0 3px', marginLeft: 4,
+                        }}>已持仓</span>
+                      )}
+                    </div>
+                    {/* 现价+涨跌幅（同一行） */}
+                    <div style={{ textAlign: 'right', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <span style={{ fontSize: 11, fontWeight: 600 }}>¥{rec.current_price}</span>
+                      <span style={{ fontSize: 10, fontWeight: 600, color: isUp ? '#e74c3c' : '#27ae60' }}>
+                        {isUp ? '+' : ''}{ret}%
+                      </span>
+                    </div>
+                  </div>
+                  {/* 移动端：理由显示在第二行 */}
+                  {recReasons.length > 0 && (
+                    <div className="rec-reasons" style={{ display: 'none', flexWrap: 'wrap', gap: 3 }}>
+                      {recReasons.map((reason, idx) => (
+                        <span key={idx} style={{
+                          fontSize: 9, color: '#8B3A42', background: '#F5E6E8',
+                          borderRadius: 3, padding: '0 4px', lineHeight: '16px',
+                        }}>{reason}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* 添加推荐表单 */}
+      {showAdd && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          zIndex: 1000,
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'flex-end',
+        }}>
+          {/* 遮罩 */}
+          <div
+            onClick={() => setShowAdd(false)}
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              background: 'rgba(0,0,0,0.4)',
+            }}
+          />
+          {/* 表单区域 */}
+          <div style={{
+            position: 'relative',
+            background: '#fff',
+            padding: 16,
+            borderTopLeftRadius: 12,
+            borderTopRightRadius: 12,
+            maxHeight: '80vh',
+            overflowY: 'auto',
+          }}>
+            <AddForm type={activeTab} onSuccess={handleAddSuccess} />
+          </div>
+        </div>
+      )}
     </div>
   )
 }

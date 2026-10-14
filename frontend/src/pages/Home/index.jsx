@@ -3,6 +3,7 @@ import { Card, Tag, SpinLoading, Button, Toast, Empty } from 'antd-mobile'
 import { LeftOutline, RightOutline } from 'antd-mobile-icons'
 import { marketApi } from '../../services/api'
 import dayjs from 'dayjs'
+import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, Legend } from 'recharts'
 
 // 市场状态中文映射
 const STATUS_MAP = {
@@ -53,6 +54,12 @@ export default function Home() {
   const [historyLoading, setHistoryLoading] = useState(false)
   const [calendarCollapsed, setCalendarCollapsed] = useState(true) // 默认收起
   const [averages, setAverages] = useState(null) // 20日/60日平均成交额
+  const [refreshingAverages, setRefreshingAverages] = useState(false) // 均量刷新中
+  const [averagesTrend, setAveragesTrend] = useState([]) // 均量趋势数据（最近60个交易日）
+  const [incompleteCount, setIncompleteCount] = useState(0) // 不完整数据数量
+  const [trendRange, setTrendRange] = useState(60) // 趋势图显示范围：20/60/120/250
+  const [exchangeData, setExchangeData] = useState([]) // 沪深A股成交额数据
+  const [exchangeRange, setExchangeRange] = useState(30) // 交易所卡片图显示范围：30或60
 
   // 上一个/下一个交易日
   const getCurrentDateIdx = () => {
@@ -100,9 +107,34 @@ export default function Home() {
   const fetchAverages = useCallback(async () => {
     try {
       const res = await marketApi.getAverages()
-      setAverages(res.data || null)
+      setAverages(res.data || { ma20: null, ma60: null, latestDate: null, latestTurnover: 0 })
     } catch (err) {
       console.error('获取平均成交额失败:', err)
+      // 失败时也设置空数据，避免一直转圈
+      setAverages({ ma20: null, ma60: null, latestDate: null, latestTurnover: 0, error: true })
+    }
+  }, [])
+
+  // 获取均量趋势数据（仅完整数据），limit 指定返回条数
+  const fetchAveragesTrend = useCallback(async (limit) => {
+    try {
+      const res = await marketApi.getAveragesTrend(limit)
+      setAveragesTrend(res.data || [])
+      setIncompleteCount(res.incompleteCount || 0)
+    } catch (err) {
+      console.error('获取均量趋势失败:', err)
+      setAveragesTrend([])
+    }
+  }, [])
+
+  // 获取沪深A股成交额数据（来自 AKShare）
+  const fetchExchangeData = useCallback(async () => {
+    try {
+      const res = await marketApi.getExchangeDaily(250)
+      setExchangeData(Array.isArray(res) ? res : res.data || [])
+    } catch (err) {
+      console.error('获取沪深A股成交额失败:', err)
+      setExchangeData([])
     }
   }, [])
 
@@ -173,26 +205,37 @@ export default function Home() {
     loadData(true)
     fetchDates()
     fetchAverages()
+    fetchAveragesTrend()
+    fetchExchangeData()
 
-    // 判断是否在交易时段
-    const isTradingTime = () => {
+    // 获取北京时间（无论本地时区是什么）
+    const getBeijingNow = () => {
       const now = new Date()
-      const h = now.getHours()
-      const m = now.getMinutes()
+      const utc = now.getTime() + now.getTimezoneOffset() * 60000
+      return new Date(utc + 8 * 3600000)
+    }
+
+    // 判断是否在交易时段（北京时间）
+    const isTradingTime = () => {
+      const now = getBeijingNow()
+      const h = now.getUTCHours()
+      const m = now.getUTCMinutes()
       const t = h * 60 + m
-      const day = now.getDay()
+      const day = now.getUTCDay()
       return day >= 1 && day <= 5 && 
         (t === 565 || (t >= 570 && t <= 690) || (t >= 780 && t <= 900))
     }
     
     // 计算距离下一个刷新时间的毫秒数
-    // 交易时段：每分钟 XX:06 刷新（后端 XX:01 采集，5 秒后前端刷新）
-    // 非交易时段：每小时 XX:06 刷新
+    // 每次调度时重新判断是否在交易时段，避免午休加载后下午不刷新
     const getMsToNextRefresh = () => {
-      const now = new Date()
-      const seconds = now.getSeconds()
-      const ms = now.getMilliseconds()
-      const minutes = now.getMinutes()
+      const now = getBeijingNow()
+      const seconds = now.getUTCSeconds()
+      const ms = now.getUTCMilliseconds()
+      const h = now.getUTCHours()
+      const m = now.getUTCMinutes()
+      const t = h * 60 + m
+      const day = now.getUTCDay()
       
       if (isTradingTime()) {
         // 交易时段：每分钟 XX:06 刷新
@@ -201,12 +244,47 @@ export default function Home() {
         } else {
           return (66 - seconds) * 1000 - ms
         }
-      } else {
-        // 非交易时段：每小时 XX:06 刷新
-        // 例如 14:07:30 → 等待到 15:06:00
-        const waitSeconds = (60 - minutes) * 60 - seconds + 6
-        return waitSeconds * 1000 - ms
       }
+      
+      // 非交易时段：判断距离下一个交易时段的距离
+      const isWeekday = day >= 1 && day <= 5
+      
+      if (isWeekday && t >= 691 && t < 780) {
+        // 午休时段（11:31 - 12:59）：每5分钟检查，但如果下次已超过13:00则直接跳到13:00
+        const minsToOpen = 780 - t // 距离13:00的分钟数
+        if (minsToOpen <= 5) {
+          // 距离开盘不足5分钟，直接等到13:00:06
+          const waitSec = minsToOpen * 60 - seconds + 6
+          return waitSec * 1000 - ms
+        } else {
+          // 每5分钟检查一次
+          const nextCheck = Math.ceil((m + 1) / 5) * 5
+          const waitSec = (nextCheck - m) * 60 - seconds + 6
+          return waitSec * 1000 - ms
+        }
+      }
+      
+      if (isWeekday && t >= 901) {
+        // 收盘后（15:01以后）：每小时刷新
+        const waitSec = (60 - m) * 60 - seconds + 6
+        return waitSec * 1000 - ms
+      }
+      
+      if (isWeekday && t < 565) {
+        // 盘前（9:25之前）：每5分钟检查
+        const minsToOpen = 565 - t
+        if (minsToOpen <= 5) {
+          const waitSec = minsToOpen * 60 - seconds + 6
+          return waitSec * 1000 - ms
+        }
+        const nextCheck = Math.ceil((m + 1) / 5) * 5
+        const waitSec = (nextCheck - m) * 60 - seconds + 6
+        return waitSec * 1000 - ms
+      }
+      
+      // 其他（周末、节假日等）：每小时刷新
+      const waitSec = (60 - m) * 60 - seconds + 6
+      return waitSec * 1000 - ms
     }
     
     // 递归定时器
@@ -214,6 +292,8 @@ export default function Home() {
       const waitMs = getMsToNextRefresh()
       timerRef.current = setTimeout(() => {
         loadData(false)
+        // 均量数据也一起轮询，确保收盘后自动更新
+        fetchAverages()
         scheduleNextRefresh()
       }, waitMs)
     }
@@ -224,8 +304,28 @@ export default function Home() {
       scheduleNextRefresh()
     }, getMsToNextRefresh())
 
+    // SSE 事件监听：后端采集完快照后立即通知前端刷新
+    const evtSource = new EventSource('/api/market/events')
+    evtSource.onopen = () => console.log('💹 [SSE] 已连接后端事件流')
+    evtSource.addEventListener('snapshot', (e) => {
+      console.log('💹 [SSE] 收到快照通知:', e.data)
+      loadData(false)
+      fetchAverages()
+    })
+    // 均量数据刷新通知（收盘后 17:00 抓取完成）
+    evtSource.addEventListener('averages', (e) => {
+      console.log('💹 [SSE] 收到均量刷新通知:', e.data)
+      fetchAverages()
+      fetchAveragesTrend()
+      fetchExchangeData()
+    })
+    evtSource.onerror = (e) => {
+      console.warn('💹 [SSE] 连接断开，将自动重连...', e)
+    }
+
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current)
+      evtSource.close()
     }
   }, [loadData, fetchDates])
 
@@ -239,22 +339,42 @@ export default function Home() {
     }
   }
 
+  // 手动刷新均量数据
+  const handleRefreshAverages = async () => {
+    setRefreshingAverages(true)
+    try {
+      // 调用后端接口刷新均量
+      await marketApi.refreshAverages()
+      // 刷新前端数据
+      await fetchAverages()
+      await fetchAveragesTrend()
+      await fetchExchangeData()
+      Toast.show('均量数据已刷新')
+    } catch (err) {
+      console.error('刷新均量失败:', err)
+      Toast.show('刷新失败')
+    } finally {
+      setRefreshingAverages(false)
+    }
+  }
+
   // 当前实时数据（使用最新一条快照，与时间线保持一致）
   const latestSnapshot = snapshots.length > 0 ? snapshots[snapshots.length - 1] : null
   const currentTurnover = latestSnapshot?.total_turnover || realtime?.total?.turnover || 0
   
-  // 计算“昨日此时”对比
+  // 计算"昨日此时"对比
   const getYesterdayComparison = () => {
     if (!yesterdayData.snapshots || yesterdayData.snapshots.length === 0) return null
     if (!currentTurnover || currentTurnover === 0) return null
-
+  
     // 找到当前时间对应的昨日快照（最接近当前时间的）
     const now = new Date()
     const nowMinutes = now.getHours() * 60 + now.getMinutes()
     const currentTimeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-
+  
     // 先精确匹配，再找最接近的
     let ySnap = yesterdayData.snapshots.find(s => s.snapshot_time === currentTimeStr)
+    let isExactMatch = !!ySnap
     if (!ySnap) {
       // 找最接近当前时间的昨日快照（不超过当前时间）
       const candidates = yesterdayData.snapshots.filter(s => {
@@ -264,20 +384,21 @@ export default function Home() {
       if (candidates.length > 0) {
         ySnap = candidates[candidates.length - 1]
       } else {
-        // 如果当前时间早于昨日第一条，用昨日最后一条（收盘数据）
+        // 当前时间早于昨日第一条快照，用昨日最后一条（收盘数据）
         ySnap = yesterdayData.snapshots[yesterdayData.snapshots.length - 1]
       }
     }
-
+  
     if (!ySnap) return null
     const yTurnover = Number(ySnap.total_turnover)
     if (yTurnover === 0) return null
-
+  
     return {
       date: yesterdayData.date,
       time: ySnap.snapshot_time,
       turnover: yTurnover,
       diff: currentTurnover - yTurnover,
+      isExactMatch,
     }
   }
 
@@ -471,7 +592,7 @@ export default function Home() {
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
-          marginBottom: 8,
+          marginBottom: 4,
         }}>
           <div style={{ fontSize: 14, color: '#666', fontWeight: 500 }}>
             A股全市场成交额
@@ -493,6 +614,10 @@ export default function Home() {
             </Button>
           </div>
         </div>
+        {/* 数据源说明 */}
+        <div style={{ fontSize: 11, color: '#999', marginBottom: 8 }}>
+          沪市 + 深市 + 北证50（北交所为估算值，约占全市场70-80%）
+        </div>
 
         {/* 总成交额 + 较昨日此时（同一行） */}
         <div style={{
@@ -511,7 +636,11 @@ export default function Home() {
           </div>
           {yesterdayComp && (
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-              <span style={{ fontSize: 11, color: '#999' }}>较昨日此时</span>
+              <span style={{ fontSize: 11, color: '#999' }}>
+                {yesterdayComp.isExactMatch
+                  ? `较昨日此时（${yesterdayComp.time}）`
+                  : `较昨日（${yesterdayComp.time}）`}
+              </span>
               <span style={{
                 fontSize: 14,
                 fontWeight: 600,
@@ -527,6 +656,7 @@ export default function Home() {
       {/* 成交额时间线 */}
       <Card
         title={selectedDate ? `${selectedDate} 成交额` : '今日成交额变化'}
+        style={{ marginBottom: 12 }}
         extra={
           <span style={{ fontSize: 12, color: '#999' }}>
             {displaySnapshots.length > 0 ? `${displaySnapshots.length}条记录` : '暂无数据'}
@@ -602,13 +732,31 @@ export default function Home() {
 
       {/* 近20日/60日平均成交额 */}
       <Card style={{ padding: 12, marginBottom: 12 }}>
-        <div style={{ fontSize: 14, color: '#666', fontWeight: 500, marginBottom: 10 }}>
-          历史平均成交额
-          {averages?.latestDate && (
-            <span style={{ fontSize: 11, color: '#999', fontWeight: 400, marginLeft: 8 }}>
-              截至 {averages.latestDate}
+        <div style={{ 
+          display: 'flex', 
+          justifyContent: 'space-between', 
+          alignItems: 'center',
+          marginBottom: 10 
+        }}>
+          <div style={{ fontSize: 14, color: '#666', fontWeight: 500 }}>
+            历史平均成交额
+            {averages?.latestDate && (
+              <span style={{ fontSize: 11, color: '#999', fontWeight: 400, marginLeft: 8 }}>
+                截至 {averages.latestDate}
+              </span>
+            )}
+            <span style={{ fontSize: 10, color: '#bbb', fontWeight: 400, marginLeft: 8 }}>
+              （不含北交所）
             </span>
-          )}
+          </div>
+          <Button
+            size="mini"
+            fill="none"
+            onClick={handleRefreshAverages}
+            style={{ padding: '2px 8px', fontSize: 12 }}
+          >
+            {refreshingAverages ? <SpinLoading style={{ '--size': '14px' }} /> : '刷新'}
+          </Button>
         </div>
         {!averages ? (
           <div style={{ textAlign: 'center', padding: '16px 0', color: '#ccc' }}>
@@ -671,6 +819,215 @@ export default function Home() {
               )}
             </div>
           </div>
+        )}
+      </Card>
+
+      {/* 均量趋势折线图 */}
+      {averagesTrend.length > 0 && (
+        <Card style={{ padding: 12, marginBottom: 12 }}>
+          <div style={{ fontSize: 13, color: '#666', fontWeight: 500, marginBottom: 8 }}>
+            均量趋势
+            <span style={{ fontSize: 10, color: '#bbb', fontWeight: 400, marginLeft: 8 }}>
+              （不含北交所）
+            </span>
+          </div>
+          <div style={{ width: '100%', height: 220 }}>
+            <ResponsiveContainer>
+              <LineChart data={averagesTrend.slice(-trendRange).map(d => ({
+                date: d.trade_date.slice(5), // MM-DD
+                ma20: d.ma20 ? parseFloat(d.ma20) : null,
+                ma60: d.ma60 ? parseFloat(d.ma60) : null,
+              }))} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+                <XAxis
+                  dataKey="date"
+                  tick={{ fontSize: 10, fill: '#999' }}
+                  interval={Math.max(1, Math.floor(trendRange / 6))}
+                  axisLine={{ stroke: '#eee' }}
+                  tickLine={false}
+                />
+                <YAxis
+                  tick={{ fontSize: 10, fill: '#999' }}
+                  axisLine={false}
+                  tickLine={false}
+                  tickFormatter={(v) => v >= 10000 ? (v / 10000).toFixed(1) + '万' : v}
+                  width={45}
+                />
+                <Tooltip
+                  contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                  formatter={(value, name) => [
+                    value ? value.toLocaleString() + ' 亿' : '--',
+                    name === 'ma20' ? 'MA20' : 'MA60',
+                  ]}
+                  labelFormatter={(label) => `日期: ${label}`}
+                />
+                <Legend
+                  verticalAlign="top"
+                  height={28}
+                  formatter={(value) => value === 'ma20' ? 'MA20' : 'MA60'}
+                  iconType="line"
+                />
+                <Line
+                  type="monotone"
+                  dataKey="ma20"
+                  stroke="#1677ff"
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 3 }}
+                  connectNulls
+                />
+                <Line
+                  type="monotone"
+                  dataKey="ma60"
+                  stroke="#722ed1"
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 3 }}
+                  connectNulls
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+            {[
+              { label: '近20日', value: 20 },
+              { label: '近60日', value: 60 },
+              { label: '近半年', value: 120 },
+              { label: '近一年', value: 250 },
+            ].map(({ label, value }) => (
+              <span
+                key={value}
+                onClick={() => {
+                  setTrendRange(value)
+                  if (averagesTrend.length < value) {
+                    fetchAveragesTrend(value)
+                  }
+                }}
+                style={{
+                  fontSize: 12,
+                  padding: '4px 12px',
+                  borderRadius: 14,
+                  cursor: 'pointer',
+                  fontWeight: 600,
+                  background: trendRange === value ? '#e74c3c' : '#f5f5f5',
+                  color: trendRange === value ? '#fff' : '#999',
+                  border: trendRange === value ? '1px solid #e74c3c' : '1px solid #e0e0e0',
+                }}
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* 沪深A股成交额（来自 AKShare） */}
+      <Card style={{ padding: 12, marginBottom: 12 }}>
+        <div style={{ fontSize: 14, color: '#666', fontWeight: 500, marginBottom: 4 }}>
+          沪深A股成交额
+          <span style={{ fontSize: 10, color: '#bbb', fontWeight: 400, marginLeft: 8 }}>
+            数据来源：AKShare
+          </span>
+        </div>
+        {exchangeData.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '16px 0', color: '#ccc' }}>
+            <SpinLoading style={{ '--size': '20px' }} />
+          </div>
+        ) : (
+          <>
+            {/* 折线图 */}
+            <div style={{ width: '100%', height: 220 }}>
+              <ResponsiveContainer>
+                <LineChart data={exchangeData.slice(-exchangeRange).map(d => ({
+                  date: d.trade_date.slice(5), // MM-DD
+                  amount: d.amount_yi ? parseFloat(d.amount_yi) : null,
+                }))} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+                  <XAxis
+                    dataKey="date"
+                    tick={{ fontSize: 10, fill: '#999' }}
+                    interval={Math.max(1, Math.floor(exchangeRange / 6))}
+                    axisLine={{ stroke: '#eee' }}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    tick={{ fontSize: 10, fill: '#999' }}
+                    axisLine={false}
+                    tickLine={false}
+                    tickFormatter={(v) => v >= 10000 ? (v / 10000).toFixed(1) + '万' : v}
+                    width={45}
+                  />
+                  <Tooltip
+                    contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                    formatter={(value) => [value ? value.toLocaleString() + ' 亿' : '--', 'A股成交额']}
+                    labelFormatter={(label) => `日期: ${label}`}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="amount"
+                    stroke="#e74c3c"
+                    strokeWidth={2}
+                    dot={false}
+                    activeDot={{ r: 3 }}
+                    connectNulls
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            {/* 时间范围切换 */}
+            <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 8 }}>
+              {[
+                { label: '近30日', value: 30 },
+                { label: '近60日', value: 60 },
+                { label: '近半年', value: 120 },
+                { label: '近一年', value: 250 },
+              ].map(opt => (
+                <span
+                  key={opt.value}
+                  onClick={() => setExchangeRange(opt.value)}
+                  style={{
+                    fontSize: 12,
+                    padding: '4px 12px',
+                    borderRadius: 14,
+                    cursor: 'pointer',
+                    fontWeight: 600,
+                    background: exchangeRange === opt.value ? '#e74c3c' : '#f5f5f5',
+                    color: exchangeRange === opt.value ? '#fff' : '#999',
+                    border: exchangeRange === opt.value ? '1px solid #e74c3c' : '1px solid #e0e0e0',
+                  }}
+                >
+                  {opt.label}
+                </span>
+              ))}
+            </div>
+            {/* 最近5天数据表格 */}
+            <div style={{ overflowX: 'auto', marginTop: 12 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                <thead>
+                  <tr style={{ background: '#f8f9fa', color: '#666' }}>
+                    <th style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 500 }}>日期</th>
+                    <th style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 500 }}>沪A</th>
+                    <th style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 500 }}>深A</th>
+                    <th style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 500 }}>A股合计</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...exchangeData].reverse().slice(0, 5).map((row, idx) => (
+                    <tr key={row.trade_date || idx} style={{ borderBottom: '1px solid #f0f0f0' }}>
+                      <td style={{ padding: '6px 8px', color: '#333' }}>{row.trade_date}</td>
+                      <td style={{ padding: '6px 8px', textAlign: 'right', color: '#333' }}>
+                        {row.sse_amount ? `${Number(row.sse_amount).toLocaleString()}亿` : '--'}
+                      </td>
+                      <td style={{ padding: '6px 8px', textAlign: 'right', color: '#333' }}>
+                        {row.szse_amount ? `${Number(row.szse_amount).toLocaleString()}亿` : '--'}
+                      </td>
+                      <td style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 600, color: '#333' }}>
+                        {row.amount_yi ? `${Number(row.amount_yi).toLocaleString()}亿` : '--'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </Card>
     </div>

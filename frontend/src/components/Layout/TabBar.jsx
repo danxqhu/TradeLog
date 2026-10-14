@@ -6,6 +6,7 @@ import {
   StarOutline,
   FileOutline,
   UnorderedListOutline,
+  ShopbagOutline,
 } from 'antd-mobile-icons'
 
 const tabs = [
@@ -13,6 +14,7 @@ const tabs = [
   { key: '/watchlist', title: '自选', icon: <StarOutline /> },
   { key: '/news', title: '资讯', icon: <FileOutline /> },
   { key: '/features', title: '功能', icon: <UnorderedListOutline /> },
+  { key: '/position', title: '持仓', icon: <ShopbagOutline /> },
 ]
 
 export default function TabBar() {

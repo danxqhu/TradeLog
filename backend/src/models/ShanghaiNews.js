@@ -25,6 +25,11 @@ const ShanghaiNews = sequelize.define('ShanghaiNews', {
     type: DataTypes.STRING(300),
     comment: '内容摘要（限300字，节省存储）',
   },
+  body: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    comment: '文章全文正文',
+  },
   url: {
     type: DataTypes.STRING(500),
     comment: '原文链接',

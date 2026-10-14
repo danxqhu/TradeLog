@@ -16,7 +16,12 @@ const Stock = sequelize.define('Stock', {
   name: {
     type: DataTypes.STRING(50),
     allowNull: false,
-    comment: '股票名称',
+    comment: '股票名称（简称）',
+  },
+  full_name: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+    comment: '股票全称',
   },
   market: {
     type: DataTypes.ENUM('SH', 'SZ', 'BJ'),
@@ -42,6 +47,22 @@ const Stock = sequelize.define('Stock', {
     type: DataTypes.BIGINT,
     defaultValue: 0,
     comment: '成交额(元)',
+  },
+  list_status: {
+    type: DataTypes.ENUM('LISTED', 'DELISTED'),
+    defaultValue: 'LISTED',
+    allowNull: false,
+    comment: '上市状态：LISTED 正常上市 / DELISTED 已退市',
+  },
+  sync_date: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    comment: '最近一次同步时间',
+  },
+  delist_date: {
+    type: DataTypes.DATEONLY,
+    allowNull: true,
+    comment: '退市日期（空=未退市）',
   },
 }, {
   tableName: 'stocks',

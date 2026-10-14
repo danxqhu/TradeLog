@@ -11,6 +11,10 @@ const ShanghaiNews = require('./ShanghaiNews');
 const ResearchReport = require('./ResearchReport');
 const TradingCalendar = require('./TradingCalendar');
 const MarketSnapshot = require('./MarketSnapshot');
+const MarketAverage = require('./MarketAverage');
+const ExchangeDaily = require('./ExchangeDaily');
+const NewsStock = require('./NewsStock');
+const EmailConfig = require('./EmailConfig');
 
 // 模型关联关系
 // Recommendation -> RecommendationTracking (一对多)
@@ -45,6 +49,28 @@ PositionConfig.belongsTo(Position, {
   as: 'position',
 });
 
+// ShanghaiNews -> NewsStock (一对多，新闻-股票匹配关联)
+ShanghaiNews.hasMany(NewsStock, {
+  foreignKey: 'news_id',
+  as: 'stockLinks',
+});
+NewsStock.belongsTo(ShanghaiNews, {
+  foreignKey: 'news_id',
+  as: 'news',
+});
+
+// Stock -> NewsStock (一对多，股票被哪些新闻提及)
+Stock.hasMany(NewsStock, {
+  foreignKey: 'stock_code',
+  sourceKey: 'code',
+  as: 'newsLinks',
+});
+NewsStock.belongsTo(Stock, {
+  foreignKey: 'stock_code',
+  targetKey: 'code',
+  as: 'stock',
+});
+
 module.exports = {
   sequelize,
   Stock,
@@ -58,4 +84,8 @@ module.exports = {
   ResearchReport,
   TradingCalendar,
   MarketSnapshot,
+  MarketAverage,
+  ExchangeDaily,
+  NewsStock,
+  EmailConfig,
 };

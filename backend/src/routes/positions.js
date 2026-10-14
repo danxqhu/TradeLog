@@ -1,9 +1,54 @@
 const express = require('express');
+const axios = require('axios');
 const router = express.Router();
-const { Position, PositionConfig, PositionAddRecord } = require('../models');
+const { Position, PositionConfig, PositionAddRecord, TradingCalendar } = require('../models');
 const { sendAlertEmail } = require('../services/emailService');
+const { calculateTradingDays } = require('../services/tradingDayService');
 
-// GET /api/positions - 获取持仓列表
+// 股票代码 -> 新浪行情代码前缀
+function getSinaPrefix(code) {
+  if (code.startsWith('6')) return 'sh';
+  if (code.startsWith('0') || code.startsWith('3')) return 'sz';
+  if (code.startsWith('4') || code.startsWith('8') || code.startsWith('9')) return 'bj';
+  return 'sh';
+}
+
+// 获取新浪实时价格
+async function fetchRealtimePrices(stockCodes) {
+  if (!stockCodes.length) return {};
+  try {
+    const sinaCodes = stockCodes.map(code => getSinaPrefix(code) + code);
+    const url = `http://hq.sinajs.cn/list=${sinaCodes.join(',')}`;
+    const response = await axios.get(url, {
+      headers: { Referer: 'https://finance.sina.com.cn', 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' },
+      timeout: 8000,
+      responseType: 'text',
+      responseEncoding: 'binary',
+    });
+    const lines = response.data.split('\n').filter(l => l.trim());
+    const result = {};
+    for (const line of lines) {
+      const match = line.match(/var hq_str_(\w+)="(.*)"/);
+      if (!match) continue;
+      const fields = match[2].split(',');
+      if (fields.length < 32) continue;
+      const code = match[1].substring(2);
+      result[code] = {
+        current_price: parseFloat(fields[3]) || 0,
+        pre_close: parseFloat(fields[2]) || 0,
+        change_percent: parseFloat(fields[2]) > 0
+          ? ((parseFloat(fields[3]) - parseFloat(fields[2])) / parseFloat(fields[2]) * 100).toFixed(2)
+          : '0.00',
+      };
+    }
+    return result;
+  } catch (error) {
+    console.error('获取实时行情失败:', error.message);
+    return {};
+  }
+}
+
+// GET /api/positions - 获取持仓列表（含实时价格和持仓天数）
 router.get('/', async (req, res) => {
   try {
     const { status = 'holding', page = 1, pageSize = 50 } = req.query;
@@ -21,8 +66,48 @@ router.get('/', async (req, res) => {
       order: [['buy_date', 'DESC']],
     });
 
+    // 获取实时价格
+    const stockCodes = positions.rows.map(p => p.stock_code);
+    const priceMap = await fetchRealtimePrices(stockCodes);
+
+    // 计算持仓天数和盈亏
+    const today = new Date().toISOString().split('T')[0];
+    const enrichedData = [];
+    for (const pos of positions.rows) {
+      const posData = pos.toJSON();
+      const realtime = priceMap[pos.stock_code];
+      if (realtime) {
+        posData.current_price = realtime.current_price;
+        posData.today_change_percent = realtime.change_percent;
+      }
+
+      // 计算盈亏
+      const avgCost = Number(posData.avg_cost) || Number(posData.buy_price);
+      const currentPrice = Number(posData.current_price) || avgCost;
+      const quantity = Number(posData.quantity);
+      posData.profit_loss = ((currentPrice - avgCost) * quantity).toFixed(2);
+      posData.profit_loss_percent = avgCost > 0
+        ? ((currentPrice - avgCost) / avgCost * 100).toFixed(2)
+        : '0.00';
+
+      // 计算持仓天数（自然日）
+      const buyDate = new Date(posData.buy_date);
+      const now = new Date(today);
+      posData.holding_natural_days = Math.floor((now - buyDate) / (1000 * 60 * 60 * 24));
+
+      // 计算持仓天数（交易日）
+      try {
+        const tradingDays = await calculateTradingDays(posData.buy_date, today);
+        posData.holding_trading_days = tradingDays;
+      } catch (e) {
+        posData.holding_trading_days = posData.holding_natural_days;
+      }
+
+      enrichedData.push(posData);
+    }
+
     res.json({
-      data: positions.rows,
+      data: enrichedData,
       total: positions.count,
       page: parseInt(page),
       pageSize: parseInt(pageSize),
@@ -127,6 +212,23 @@ router.post('/:id/add', async (req, res) => {
     });
 
     res.json({ data: record, position: await Position.findByPk(position.id) });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE /api/positions/:id - 删除持仓
+router.delete('/:id', async (req, res) => {
+  try {
+    const position = await Position.findByPk(req.params.id);
+    if (!position) {
+      return res.status(404).json({ error: '持仓不存在' });
+    }
+    // 先删除关联的加仓记录和策略配置
+    await PositionAddRecord.destroy({ where: { position_id: position.id } });
+    await PositionConfig.destroy({ where: { stock_code: position.stock_code } });
+    await position.destroy();
+    res.json({ message: '删除成功' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

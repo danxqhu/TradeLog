@@ -18,9 +18,11 @@ export default function News() {
   const [scraping, setScraping] = useState(false)
   const [scanning, setScanning] = useState(false)
   const [refreshingStocks, setRefreshingStocks] = useState(false)
+  const [syncProgressInfo, setSyncProgressInfo] = useState(null)
   const [stockDictInfo, setStockDictInfo] = useState(null)
   const [showOnlyStock, setShowOnlyStock] = useState(true)
   const [calendarCollapsed, setCalendarCollapsed] = useState(true)
+  const [scrapeProgress, setScrapeProgress] = useState(null)
 
   // 加载有数据的日期列表
   const fetchDates = useCallback(async () => {
@@ -56,11 +58,33 @@ export default function News() {
     fetchArticles(selectedDate)
   }, [selectedDate, fetchArticles])
 
-  // 触发抓取
+  // 触发抓取（SSE 推送进度，不用定时器）
   const handleScrape = async () => {
     setScraping(true)
+    setScrapeProgress({ stage: '正在连接...', percent: 0, message: '' })
+
+    // 1. 先建立 SSE 连接，监听后端推送的进度
+    const evtSource = new EventSource('/api/shanghai-news/scrape-progress')
+    evtSource.addEventListener('progress', (e) => {
+      try {
+        setScrapeProgress(JSON.parse(e.data))
+      } catch {}
+    })
+    evtSource.addEventListener('done', (e) => {
+      try {
+        setScrapeProgress(JSON.parse(e.data))
+      } catch {}
+      evtSource.close()
+    })
+    evtSource.onerror = () => {
+      // 连接异常时关闭 SSE，不影响 POST 结果
+      evtSource.close()
+    }
+
+    // 2. 发送抓取请求
     try {
       const res = await shanghaiNewsApi.scrape(selectedDate)
+      evtSource.close()
       if (res.success) {
         Dialog.alert({
           title: '抓取完成',
@@ -77,6 +101,7 @@ export default function News() {
         Toast.show('抓取失败')
       }
     } catch (err) {
+      evtSource.close()
       Dialog.alert({
         title: '抓取失败',
         content: err.response?.data?.error || err.message,
@@ -84,6 +109,7 @@ export default function News() {
       })
     } finally {
       setScraping(false)
+      setScrapeProgress(null)
     }
   }
 
@@ -105,18 +131,49 @@ export default function News() {
     }
   }
 
-  // 刷新股票词典
+  // 刷新股票词典（异步轮询，显示进度）
   const handleRefreshStocks = async () => {
     setRefreshingStocks(true)
+    setSyncProgressInfo({ percent: 0, stage: '正在发起同步...' })
     try {
-      const res = await shanghaiNewsApi.refreshStocks()
-      Toast.show({ content: res.message || `已更新 ${res.count} 只股票`, duration: 3000 })
-      const info = await shanghaiNewsApi.getStockDict()
-      setStockDictInfo(info)
+      await shanghaiNewsApi.refreshStocks()
+      // 轮询等待刷新完成，每 2 秒查询一次进度
+      const poll = async (retries = 0) => {
+        if (retries > 90) {
+          Toast.show({ content: '同步超时，请稍后重试', duration: 3000 })
+          setRefreshingStocks(false)
+          setSyncProgressInfo(null)
+          return
+        }
+        await new Promise(r => setTimeout(r, 2000))
+        try {
+          const status = await shanghaiNewsApi.getRefreshStatus()
+          // 更新进度显示
+          if (status.progress) {
+            setSyncProgressInfo(status.progress)
+          }
+          if (!status.running && status.lastResult) {
+            Toast.show({ content: status.lastResult.message || '同步完成', duration: 4000 })
+            const info = await shanghaiNewsApi.getStockDict()
+            setStockDictInfo(info)
+            setRefreshingStocks(false)
+            setSyncProgressInfo(null)
+          } else if (!status.running && status.lastError) {
+            Toast.show({ content: '同步失败: ' + status.lastError, duration: 4000 })
+            setRefreshingStocks(false)
+            setSyncProgressInfo(null)
+          } else {
+            await poll(retries + 1)
+          }
+        } catch {
+          await poll(retries + 1)
+        }
+      }
+      await poll()
     } catch (err) {
-      Toast.show('刷新失败')
-    } finally {
+      Toast.show('同步失败')
       setRefreshingStocks(false)
+      setSyncProgressInfo(null)
     }
   }
 
@@ -146,7 +203,7 @@ export default function News() {
   const calendarDays = generateCalendarDays()
 
   return (
-    <div className="page-container">
+    <div className="page-container" style={{ '--adm-color-primary': '#8B3A42' }}>
       <Card>
         <Tabs activeKey={activeTab} onChange={(key) => {
           if (key === 'goldman') {
@@ -166,7 +223,7 @@ export default function News() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, minHeight: 28 }}>
                 <div 
                   onClick={() => setViewMonth(viewMonth.subtract(1, 'month'))}
-                  style={{ cursor: 'pointer', color: '#1677ff', minWidth: 30, textAlign: 'center', fontSize: 18 }}
+                  style={{ cursor: 'pointer', color: '#8B3A42', minWidth: 30, textAlign: 'center', fontSize: 18 }}
                 >
                   <LeftOutline />
                 </div>
@@ -179,7 +236,7 @@ export default function News() {
                   </span>
                   <span 
                     onClick={() => setCalendarCollapsed(!calendarCollapsed)}
-                    style={{ fontSize: 12, color: '#1677ff', cursor: 'pointer' }}
+                    style={{ fontSize: 12, color: '#8B3A42', cursor: 'pointer' }}
                   >
                     {calendarCollapsed ? '展开' : '收起'}
                   </span>
@@ -187,7 +244,7 @@ export default function News() {
                 
                 <div 
                   onClick={() => setViewMonth(viewMonth.add(1, 'month'))}
-                  style={{ cursor: 'pointer', color: '#1677ff', minWidth: 30, textAlign: 'center', fontSize: 18 }}
+                  style={{ cursor: 'pointer', color: '#8B3A42', minWidth: 30, textAlign: 'center', fontSize: 18 }}
                 >
                   <RightOutline />
                 </div>
@@ -232,7 +289,7 @@ export default function News() {
                           padding: '4px 0',
                           borderRadius: 6,
                           cursor: day.hasData ? 'pointer' : 'default',
-                          background: day.isSelected ? '#1677ff' : 'transparent',
+                          background: day.isSelected ? '#8B3A42' : 'transparent',
                           color: day.isSelected ? '#fff' : day.hasData ? '#333' : '#ccc',
                           position: 'relative',
                           fontSize: 13,
@@ -241,7 +298,7 @@ export default function News() {
                       >
                         {day.date}
                         {day.hasData && !day.isSelected && (
-                          <div style={{ width: 4, height: 4, borderRadius: '50%', background: '#1677ff', margin: '1px auto 0' }} />
+                          <div style={{ width: 4, height: 4, borderRadius: '50%', background: '#8B3A42', margin: '1px auto 0' }} />
                         )}
                       </div>
                     ))
@@ -256,7 +313,7 @@ export default function News() {
                         padding: '4px 0',
                         borderRadius: 6,
                         cursor: day?.hasData ? 'pointer' : 'default',
-                        background: day?.isSelected ? '#1677ff' : 'transparent',
+                        background: day?.isSelected ? '#8B3A42' : 'transparent',
                         color: day?.isSelected ? '#fff' : day?.hasData ? '#333' : '#ccc',
                         position: 'relative',
                         fontSize: 13,
@@ -265,7 +322,7 @@ export default function News() {
                     >
                       {day ? day.date : ''}
                       {day?.hasData && !day.isSelected && (
-                        <div style={{ width: 4, height: 4, borderRadius: '50%', background: '#1677ff', margin: '1px auto 0' }} />
+                        <div style={{ width: 4, height: 4, borderRadius: '50%', background: '#8B3A42', margin: '1px auto 0' }} />
                       )}
                     </div>
                   ))
@@ -276,24 +333,42 @@ export default function News() {
 
             {/* 股票词典状态 */}
             <div style={{
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-              background: '#f9f9f9', borderRadius: 6, padding: '4px 8px', marginBottom: 8,
+              background: '#f9f9f9', borderRadius: 6, padding: '6px 8px', marginBottom: 8,
               fontSize: 11, color: '#888',
             }}>
-              <span>
-                股票库：{stockDictInfo ? `${stockDictInfo.count} 只` : '未加载'}
-                {stockDictInfo?.updatedAt && ` · 更新于 ${dayjs(stockDictInfo.updatedAt).format('M/D HH:mm')}`}
-              </span>
-              <Button
-                size="mini"
-                fill="none"
-                onClick={handleRefreshStocks}
-                loading={refreshingStocks}
-                disabled={refreshingStocks}
-                style={{ fontSize: 11, padding: '0 4px' }}
-              >
-                {refreshingStocks ? '拉取中...' : '刷新股票库'}
-              </Button>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>
+                  股票库：{stockDictInfo ? `${stockDictInfo.count} 只上市` : '未加载'}
+                  {stockDictInfo?.delistedCount > 0 && ` / ${stockDictInfo.delistedCount} 只退市`}
+                </span>
+                <Button
+                  size="mini"
+                  fill="none"
+                  onClick={handleRefreshStocks}
+                  disabled={refreshingStocks}
+                  style={{ fontSize: 11, padding: '0 4px' }}
+                >
+                  {refreshingStocks ? '同步中...' : '同步股票库'}
+                </Button>
+              </div>
+              {/* 进度条 */}
+              {syncProgressInfo && (
+                <div style={{ marginTop: 4 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                    <span style={{ fontSize: 10, color: '#666' }}>{syncProgressInfo.stage}</span>
+                    <span style={{ fontSize: 10, color: '#8B3A42' }}>{syncProgressInfo.percent}%</span>
+                  </div>
+                  <div style={{ height: 4, background: '#e0e0e0', borderRadius: 2, overflow: 'hidden' }}>
+                    <div style={{
+                      height: '100%',
+                      width: `${syncProgressInfo.percent}%`,
+                      background: '#8B3A42',
+                      borderRadius: 2,
+                      transition: 'width 0.3s ease',
+                    }} />
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* 操作栏 */}
@@ -345,6 +420,37 @@ export default function News() {
               💡 每日自动抓取：凌晨 3:00、早上 6:00
             </div>
 
+            {/* 抓取进度条（SSE 实时推送） */}
+            {scrapeProgress && (
+              <div style={{
+                background: '#FAF0F1', borderRadius: 8, padding: '8px 12px', marginBottom: 8,
+                border: '1px solid #E8CED1',
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <span style={{ fontSize: 12, color: '#8B3A42', fontWeight: 500 }}>
+                    {scrapeProgress.stage}
+                  </span>
+                  <span style={{ fontSize: 12, color: '#8B3A42' }}>
+                    {scrapeProgress.percent}%
+                  </span>
+                </div>
+                <div style={{ height: 6, background: '#E8CED1', borderRadius: 3, overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%',
+                    width: `${scrapeProgress.percent}%`,
+                    background: 'linear-gradient(90deg, #8B3A42, #C27078)',
+                    borderRadius: 3,
+                    transition: 'width 0.4s ease',
+                  }} />
+                </div>
+                {scrapeProgress.message && (
+                  <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
+                    {scrapeProgress.message}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* 文章列表 */}
             {loading ? (
               <div style={{ textAlign: 'center', padding: 20 }}>
@@ -373,7 +479,7 @@ export default function News() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                       {item.url && (
                         <a href={item.url} target="_blank" rel="noopener noreferrer"
-                          style={{ fontSize: 11, color: '#1677ff', textDecoration: 'none', flexShrink: 0 }}>
+                          style={{ fontSize: 11, color: '#8B3A42', textDecoration: 'none', flexShrink: 0 }}>
                           原文 ↗
                         </a>
                       )}
@@ -386,7 +492,7 @@ export default function News() {
                         )}
                         {item.mentioned_stocks?.map((s, i) => (
                           <span key={i} style={{
-                            fontSize: 10, color: '#1677ff', background: '#e6f4ff',
+                            fontSize: 10, color: '#C4737A', background: '#F5E6E8',
                             padding: '0 4px', borderRadius: 2, lineHeight: '16px', flexShrink: 0,
                           }}>
                             {s.name} {s.code}

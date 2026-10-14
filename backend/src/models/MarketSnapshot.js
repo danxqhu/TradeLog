@@ -52,6 +52,11 @@ const MarketSnapshot = sequelize.define('MarketSnapshot', {
     defaultValue: 0,
     comment: '北证50点位',
   },
+  collected_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    comment: '行情原始时间戳（UTC）—— 数据源返回的真实时间，非机器时间',
+  },
 }, {
   tableName: 'market_snapshots',
   timestamps: true,

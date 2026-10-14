@@ -1,4 +1,8 @@
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
+const { execFile } = require('child_process');
+const { MarketAverage, ExchangeDaily } = require('../models');
 
 // 获取北京时间
 function getBeijingTime() {
@@ -41,6 +45,8 @@ const INDEX_NAMES = {
   sh000001: '上证指数',
   sz399001: '深证成指',
   bj899050: '北证50',
+  sz399106: '深证综指',
+  bj899100: '北证全指',
 };
 
 /**
@@ -48,7 +54,12 @@ const INDEX_NAMES = {
  * @returns {Promise<{shanghai: object, shenzhen: object, beijing: object, total: object, raw: object}>}
  */
 async function fetchMarketData() {
-  const url = 'http://hq.sinajs.cn/list=sh000001,sz399001,bj899050';
+  // ★ 使用全市场指数，避免成分指数导致成交额偏低
+  // sh000001: 上证指数（沪市全部股票）
+  // sz399106: 深证综指（深市全部股票）—— 注意不是 sz399001 深证成指（仅500只成分股）
+  // bj899050: 北证50（北交所市值最大的50只，占北交所成交额约70-80%）
+  //          注：新浪 API 无北证全指，北证50是最佳可用代理
+  const url = 'http://hq.sinajs.cn/list=sh000001,sz399106,bj899050';
   const response = await axios.get(url, {
     headers: {
       Referer: 'https://finance.sina.com.cn',
@@ -88,8 +99,8 @@ async function fetchMarketData() {
   }
 
   const shanghai = result.sh000001 || {};
-  const shenzhen = result.sz399001 || {};
-  const beijing = result.bj899050 || {};
+  const shenzhen = result.sz399106 || {};  // 深证综指（全市场）
+  const beijing = result.bj899050 || {};   // 北证50（北交所最佳代理）
   const totalTurnover = (shanghai.turnover || 0) + (shenzhen.turnover || 0) + (beijing.turnover || 0);
 
   return {
@@ -100,9 +111,11 @@ async function fetchMarketData() {
       turnover: totalTurnover,
       turnoverYi: +(totalTurnover / 1e8).toFixed(2), // 亿元
     },
-    timestamp: new Date().toISOString(),
-    marketTime: shanghai.time || '',
-    marketDate: shanghai.date || '',
+    // ★ 行情数据源返回的原始业务时间戳（北京时间，优先使用）
+    marketTime: shanghai.time || '',   // "09:43:05"
+    marketDate: shanghai.date || '',   // "2026-10-14"
+    // 机器时间仅作兆底，禁止用作主业务时间
+    serverTimestamp: new Date().toISOString(),
   };
 }
 
@@ -173,121 +186,104 @@ function getMarketStatus() {
   return 'closed';                          // 15:00 以后
 }
 
-/**
- * 从东方财富获取指数历史日K数据（含成交额）
- * @param {string} secid - 指数代码，如 '1.000001'（上证）
- * @param {number} limit - 获取天数
- * @returns {Promise<Array<{date: string, turnover: number}>>}
- */
-async function fetchIndexHistory(secid, limit = 120) {
-  // 使用 HTTP 协议（HTTPS 容易被拒）
-  const url = 'http://push2his.eastmoney.com/api/qt/stock/kline/get';
-  const params = {
-    secid,
-    fields1: 'f1,f2,f3,f4,f5,f6',
-    fields2: 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61',
-    klt: '101',   // 日K
-    fqt: '1',     // 前复权
-    lmt: String(limit),
-    end: '20500101',
-    ut: 'fa5fd1943c7b386f172d6893dbfba10b',
-  };
+// ============ 均量缓存（从数据库 market_averages 表读取） ============
+// 数据来源：AKShare（上交所 + 深交所官方每日成交数据）
+// 脚本位置：backend/scripts/fetch_market_averages.py
+// 数据库表：market_averages
 
-  try {
-    const response = await axios.get(url, {
-      params,
-      timeout: 15000,
-      headers: {
-        Referer: 'https://quote.eastmoney.com',
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        Accept: '*/*',
-      },
-    });
+const AVG_JSON_PATH = path.join(__dirname, '../../data/market_averages.json');
+const PYTHON_SCRIPT = path.join(__dirname, '../scripts/fetch_market_averages.py');
+const IMPORT_SCRIPT = path.join(__dirname, '../scripts/import_averages.js');
 
-    const klines = response.data?.data?.klines;
-    if (!klines || !Array.isArray(klines)) return [];
-
-    return klines.map(line => {
-      const parts = line.split(',');
-      return {
-        date: parts[0],
-        turnover: parseFloat(parts[6]) || 0,  // 成交额（元）
-      };
-    }).filter(d => d.date && d.turnover > 0);
-  } catch (err) {
-    console.error(`获取指数 ${secid} 历史数据失败:`, err.message);
-    return [];
-  }
-}
-
-/**
- * 获取最近20日和60日A股全市场平均成交额（原始请求，不缓存）
- * 数据来源：东方财富（上证指数 + 深证成指 + 北证50）
- * @returns {Promise<object>}
- */
-async function _fetchMarketAveragesRaw() {
-  // 并行获取三大指数近 150 个交易日数据
-  const [shData, szData, bjData] = await Promise.all([
-    fetchIndexHistory('1.000001', 150),  // 上证指数（沪市全部股票）
-    fetchIndexHistory('0.399001', 150),  // 深证成指（深市代表）
-    fetchIndexHistory('0.899050', 150),  // 北证50（北交所）
-  ]);
-
-  // 按日期合并：每日总成交额 = 上证 + 深证 + 北证
-  const dailyMap = new Map();
-
-  for (const d of shData) {
-    dailyMap.set(d.date, (dailyMap.get(d.date) || 0) + d.turnover);
-  }
-  for (const d of szData) {
-    dailyMap.set(d.date, (dailyMap.get(d.date) || 0) + d.turnover);
-  }
-  for (const d of bjData) {
-    dailyMap.set(d.date, (dailyMap.get(d.date) || 0) + d.turnover);
-  }
-
-  // 按日期降序（最新在前）
-  const dailyTotals = Array.from(dailyMap.entries())
-    .map(([date, turnover]) => ({ date, turnover }))
-    .sort((a, b) => b.date.localeCompare(a.date));
-
-  // 计算均线
-  const calcMA = (n) => {
-    if (dailyTotals.length < n) return null;
-    const sum = dailyTotals.slice(0, n).reduce((s, d) => s + d.turnover, 0);
-    return sum / n;
-  };
-
-  const ma20 = calcMA(20);
-  const ma60 = calcMA(60);
-
-  return {
-    ma20,
-    ma60,
-    latestDate: dailyTotals[0]?.date || null,
-    latestTurnover: dailyTotals[0]?.turnover || 0,
-    totalDays: dailyTotals.length,
-    ma20Date: dailyTotals[Math.min(19, dailyTotals.length - 1)]?.date || null,
-    ma60Date: dailyTotals[Math.min(59, dailyTotals.length - 1)]?.date || null,
-  };
-}
-
-// ============ 均量缓存 ============
-// 缓存逻辑：
-// - 交易日 15:05 后：请求一次，缓存到当天结束
-// - 交易日 15:05 前：用上一个交易日的缓存
-// - 非交易日：始终用缓存（数据不会变）
 let _avgCache = {
   data: null,       // 缓存的均量数据
-  fetchDate: null,  // 上次请求的日期 (YYYY-MM-DD)
-  fetchTime: 0,     // 上次请求的时间戳
+  fetchDate: null,  // 上次加载的日期
+  refreshing: false, // 是否正在后台刷新
 };
 
 /**
+ * 从数据库加载均量数据（market_averages 表）
+ */
+async function _loadFromDB() {
+  try {
+    const latest = await MarketAverage.findOne({
+      order: [['trade_date', 'DESC']],
+    });
+    if (!latest) return null;
+
+    const count = await MarketAverage.count();
+    const completeCount = await MarketAverage.count({ where: { data_complete: true } });
+    
+    // ma20/ma60 单位是亿元，转为元给前端
+    return {
+      ma20: latest.ma20 ? parseFloat(latest.ma20) * 1e8 : null,
+      ma60: latest.ma60 ? parseFloat(latest.ma60) * 1e8 : null,
+      latestDate: latest.trade_date || null,
+      latestTurnover: latest.amount_yi ? parseFloat(latest.amount_yi) * 1e8 : 0,
+      sseAmount: latest.sse_amount ? parseFloat(latest.sse_amount) * 1e8 : null,
+      szseAmount: latest.szse_amount ? parseFloat(latest.szse_amount) * 1e8 : null,
+      bseAmount: latest.bse_amount ? parseFloat(latest.bse_amount) * 1e8 : null,
+      dataComplete: latest.data_complete || false,
+      totalDays: count,
+      completeDays: completeCount,
+    };
+  } catch (err) {
+    console.error('💹 [均量] 读取数据库失败:', err.message);
+    return null;
+  }
+}
+
+/**
+ * 增量刷新：查询 DB 最新日期，只抓取之后的缺失数据，合并重算均线
+ */
+async function _runPythonScript() {
+  // 1. 查询数据库中最新日期
+  let fromDate = '2026-01-01'; // 默认起始日期
+  try {
+    const latest = await MarketAverage.findOne({
+      order: [['trade_date', 'DESC']],
+      raw: true,
+    });
+    if (latest) fromDate = latest.trade_date;
+  } catch (e) {
+    // 表可能不存在，忽略
+  }
+
+  // 2. 运行 Python 脚本（增量模式）
+  await new Promise((resolve, reject) => {
+    console.log(`💹 [均量] 增量抓取：从 ${fromDate} 之后...`);
+    const outStream = fs.createWriteStream(AVG_JSON_PATH);
+    const proc = execFile('python3', [PYTHON_SCRIPT, '--from-date', fromDate], {
+      timeout: 300000,
+    });
+    proc.stdout.pipe(outStream);
+    proc.stderr.on('data', (d) => process.stderr.write(d));
+    proc.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Python 脚本退出码 ${code}`));
+    });
+    proc.on('error', reject);
+  });
+
+  // 3. 运行导入脚本（合并新旧数据 + 重算均线）
+  await new Promise((resolve, reject) => {
+    console.log('💹 [均量] 正在合并数据并重算均线...');
+    const proc = execFile('node', [IMPORT_SCRIPT], { timeout: 30000 });
+    proc.stdout.on('data', (d) => console.log(d.toString().trim()));
+    proc.stderr.on('data', (d) => console.error(d.toString().trim()));
+    proc.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`导入脚本退出码 ${code}`));
+    });
+    proc.on('error', reject);
+  });
+}
+
+/**
  * 获取20日/60日平均成交额（带缓存）
- * - 交易日 15:05 后首次访问会触发请求，之后用缓存
- * - 其他时间直接返回缓存
- * @returns {Promise<object>}
+ * - 首次调用从数据库加载
+ * - 交易日 15:05 后自动运行 Python 脚本刷新
+ * - 如果缓存数据不是最新交易日，收盘后自动后台刷新
  */
 async function getMarketAveragesCached() {
   const bjTime = getBeijingTime();
@@ -297,33 +293,56 @@ async function getMarketAveragesCached() {
   const t = h * 60 + m;
   const isTrading = isTradingDay(bjTime);
 
-  // 判断缓存是否有效
   let needRefresh = false;
 
   if (!_avgCache.data) {
-    // 从未加载过，必须请求
-    needRefresh = true;
-  } else if (_avgCache.fetchDate === todayStr) {
-    // 今天已经请求过了，缓存有效
-    needRefresh = false;
-  } else if (isTrading && t >= 905) {
-    // 交易日 15:05 后（t=905），且今天还没请求过 → 需要刷新
-    needRefresh = true;
-  } else {
-    // 非交易日 或 交易日盘中/盘前 → 用缓存
-    needRefresh = false;
+    // 首次加载：从数据库读取
+    _avgCache.data = await _loadFromDB();
+    if (!_avgCache.data) needRefresh = true;
+    else _avgCache.fetchDate = 'loaded-from-db';
+  }
+
+  if (_avgCache.fetchDate !== todayStr) {
+    if (isTrading && t >= 905) {
+      needRefresh = true;
+    } else if (!_avgCache.data) {
+      needRefresh = true;
+    }
+  }
+
+  // 收盘后自动检测：如果缓存的最新日期不是今天，后台触发刷新
+  // 这样即使凌晨刷新失败，收盘后也会自动重试
+  if (!needRefresh && _avgCache.data && isTrading && t >= 905) {
+    const latestDate = _avgCache.data.latestDate;
+    if (latestDate && latestDate < todayStr && !_avgCache.refreshing) {
+      console.log(`💹 [均量] 缓存数据过期（最新: ${latestDate}，今天: ${todayStr}），后台自动刷新...`);
+      _avgCache.refreshing = true;
+      _runPythonScript()
+        .then(async () => {
+          _avgCache.data = await _loadFromDB();
+          _avgCache.fetchDate = todayStr;
+          _avgCache.refreshing = false;
+          if (_avgCache.data) {
+            console.log(`💹 [均量] 后台刷新完成，最新日期: ${_avgCache.data.latestDate}`);
+          }
+        })
+        .catch(err => {
+          _avgCache.refreshing = false;
+          console.error('💹 [均量] 后台刷新失败:', err.message);
+        });
+    }
   }
 
   if (needRefresh) {
     try {
-      console.log('💹 [均量] 正在从东方财富获取最新数据...');
-      _avgCache.data = await _fetchMarketAveragesRaw();
+      await _runPythonScript();
+      _avgCache.data = await _loadFromDB();
       _avgCache.fetchDate = todayStr;
-      _avgCache.fetchTime = Date.now();
-      console.log(`💹 [均量] 缓存已更新，最新日期: ${_avgCache.data.latestDate}`);
+      if (_avgCache.data) {
+        console.log(`💹 [均量] 缓存已更新，最新日期: ${_avgCache.data.latestDate}`);
+      }
     } catch (err) {
-      console.error('💹 [均量] 获取失败，使用旧缓存:', err.message);
-      // 如果请求失败但有旧缓存，继续用旧缓存
+      console.error('💹 [均量] 刷新失败:', err.message);
       if (!_avgCache.data) {
         _avgCache.data = { ma20: null, ma60: null, latestDate: null, latestTurnover: 0 };
       }
@@ -337,8 +356,95 @@ async function getMarketAveragesCached() {
  * 强制刷新均量缓存（供定时任务调用）
  */
 async function refreshMarketAverages() {
-  _avgCache.fetchDate = null; // 清除日期标记，强制刷新
-  return getMarketAveragesCached();
+  // 强制清空缓存，从数据库重新加载
+  _avgCache.data = null;
+  _avgCache.fetchDate = null;
+  
+  // 先尝试运行 Python 脚本抓取新数据
+  try {
+    await _runPythonScript();
+  } catch (err) {
+    console.error('💹 [均量] Python 脚本失败:', err.message);
+  }
+  
+  // 从数据库重新加载
+  _avgCache.data = await _loadFromDB();
+  _avgCache.fetchDate = getBeijingTime().toISOString().split('T')[0];
+  
+  return _avgCache.data || { ma20: null, ma60: null, latestDate: null, latestTurnover: 0 };
+}
+
+// ============ 交易所官方每日成交额刷新 ============
+const EXCHANGE_PY_SCRIPT = path.join(__dirname, '../../scripts/fetch_exchange_daily.py');
+const EXCHANGE_JSON_PATH = path.join(__dirname, '../../data/exchange_daily.json');
+const EXCHANGE_IMPORT_SCRIPT = path.join(__dirname, '../../scripts/import_exchange_daily.js');
+
+/**
+ * 刷新交易所官方每日成交额（增量模式：先查 DB 最新日期，只抓缺失的）
+ */
+async function refreshExchangeDaily() {
+  // 1. 查询数据库中最新日期
+  let latestDate = null;
+  try {
+    const latest = await ExchangeDaily.findOne({
+      order: [['trade_date', 'DESC']],
+      raw: true,
+    });
+    if (latest) latestDate = latest.trade_date;
+  } catch (e) {
+    // 表可能不存在，忽略
+  }
+
+  // 2. 判断是否需要抓取：如果最新日期已经是今天或最近交易日，跳过
+  const bjTime = getBeijingTime();
+  const todayStr = bjTime.toISOString().split('T')[0];
+
+  if (latestDate === todayStr) {
+    console.log(`💹 [交易所] 已是最新（${latestDate}），无需刷新`);
+    return;
+  }
+
+  // 如果最新日期是昨天（且今天是交易日），也跳过（交易所数据通常凌晨才发布）
+  const fromDate = latestDate || '2026-01-01';
+  console.log(`💹 [交易所] 开始增量刷新：从 ${fromDate} 之后...`);
+
+  // 3. 运行 Python 脚本（增量模式）
+  await new Promise((resolve, reject) => {
+    const outStream = fs.createWriteStream(EXCHANGE_JSON_PATH);
+    const proc = execFile('python3', [EXCHANGE_PY_SCRIPT, '--from-date', fromDate], { timeout: 300000 });
+    proc.stdout.pipe(outStream);
+    proc.stderr.on('data', (d) => process.stderr.write(d));
+    proc.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Python 脚本退出码 ${code}`));
+    });
+    proc.on('error', reject);
+  });
+
+  // 4. 检查 JSON 是否有数据
+  if (!fs.existsSync(EXCHANGE_JSON_PATH)) {
+    console.log('💹 [交易所] 无新数据');
+    return;
+  }
+  const raw = fs.readFileSync(EXCHANGE_JSON_PATH, 'utf-8').trim();
+  if (!raw || raw === '[]') {
+    console.log('💹 [交易所] 无新数据');
+    return;
+  }
+
+  // 5. 运行导入脚本写入数据库
+  await new Promise((resolve, reject) => {
+    const proc = execFile('node', [EXCHANGE_IMPORT_SCRIPT], { timeout: 30000 });
+    proc.stdout.on('data', (d) => console.log(d.toString().trim()));
+    proc.stderr.on('data', (d) => console.error(d.toString().trim()));
+    proc.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`导入脚本退出码 ${code}`));
+    });
+    proc.on('error', reject);
+  });
+
+  console.log('💹 [交易所] 刷新完成');
 }
 
 module.exports = {
@@ -349,4 +455,5 @@ module.exports = {
   getBeijingTime,
   getMarketAveragesCached,
   refreshMarketAverages,
+  refreshExchangeDaily,
 };

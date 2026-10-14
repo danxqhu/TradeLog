@@ -15,6 +15,9 @@ import PositionStrategy from './pages/Position/Strategy'
 import GoldmanSachs from './pages/GoldmanSachs'
 import Shao from './pages/Shao'
 import FinanceReport from './pages/FinanceReport'
+import ChipDistribution from './pages/ChipDistribution'
+import Rainbow from './pages/Rainbow'
+import Email from './pages/Email'
 
 function App() {
   return (
@@ -49,6 +52,15 @@ function App() {
 
           {/* 财报分析 */}
           <Route path="/finance-report" element={<FinanceReport />} />
+
+          {/* 筹码分布 */}
+          <Route path="/chip-distribution" element={<ChipDistribution />} />
+
+          {/* 七道彩虹 */}
+          <Route path="/rainbow" element={<Rainbow />} />
+
+          {/* 邮件推送 */}
+          <Route path="/email" element={<Email />} />
 
           {/* 默认重定向 */}
           <Route path="*" element={<Navigate to="/" replace />} />

@@ -51,6 +51,22 @@ const Recommendation = sequelize.define('Recommendation', {
     type: DataTypes.TEXT,
     comment: '备注',
   },
+  reasons: {
+    type: DataTypes.TEXT,
+    comment: '推荐理由(JSON数组)',
+    get() {
+      const raw = this.getDataValue('reasons');
+      if (!raw) return [];
+      try { return JSON.parse(raw); } catch { return []; }
+    },
+    set(val) {
+      if (Array.isArray(val)) {
+        this.setDataValue('reasons', JSON.stringify(val.filter(r => r && r.trim())));
+      } else {
+        this.setDataValue('reasons', null);
+      }
+    },
+  },
 }, {
   tableName: 'recommendations',
 });
