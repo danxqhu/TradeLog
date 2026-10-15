@@ -13,7 +13,7 @@ WORKDIR /app
 # 时区支持 + Python3 + curl（定时任务需要调用 Python 脚本和 curl）
 # akshare 依赖 pandas/lxml，需要编译环境
 RUN apk add --no-cache tzdata python3 py3-pip curl build-base python3-dev libxml2-dev libxslt-dev \
-    && pip3 install --no-cache --break-system-packages requests beautifulsoup4 lxml akshare \
+    && pip3 install --no-cache --break-system-packages requests beautifulsoup4 lxml akshare jieba pymysql \
     && apk del build-base python3-dev libxml2-dev libxslt-dev
 ENV TZ=Asia/Shanghai
 COPY package*.json ./
