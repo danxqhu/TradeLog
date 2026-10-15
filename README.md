@@ -232,6 +232,12 @@ TradeLog/
 5. `cd reverse-proxy && docker-compose restart`
 6. Cloudflare 添加 A 记录（橙色云朵）
 
+> **注意**：Backend Dockerfile 的 CMD 包含 `--experimental-fetch` 启动参数。
+> 原因：`node:18-alpine` 镜像内的 Node 小版本可能较老，`File`/`Blob` 等 Web API 未全局暴露，
+> 导致 `undici`（Node fetch 底层库）报 `ReferenceError: File is not defined`，容器反复重启。
+> 加上 `--experimental-fetch` 后全局挂载这些 WebAPI，与本地新版 Node 18 行为一致。
+> 如果未来升级基础镜像到 Node 20+，可移除此参数（Node 20 已默认开启）。
+
 ---
 
 ## 环境变量说明

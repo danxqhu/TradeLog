@@ -24,7 +24,10 @@ COPY scripts ./scripts
 # Python 脚本写入中间 JSON 的目录（运行时动态生成，不 COPY）
 RUN mkdir -p /app/data
 EXPOSE 3001
-CMD ["node", "src/app.js"]
+# --experimental-fetch：node:18-alpine 镜像内 Node 小版本可能较老，
+# File/Blob 等 Web API 未全局暴露，undici 会报 ReferenceError: File is not defined。
+# 加上此 flag 确保全局挂载 fetch 相关 WebAPI，与本地新版 Node 18 行为一致。
+CMD ["node", "--experimental-fetch", "src/app.js"]
 
 # ---------- 开发阶段：nodemon 热更新 ----------
 FROM deps AS development
