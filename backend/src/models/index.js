@@ -15,6 +15,8 @@ const MarketAverage = require('./MarketAverage');
 const ExchangeDaily = require('./ExchangeDaily');
 const NewsStock = require('./NewsStock');
 const EmailConfig = require('./EmailConfig');
+const User = require('./User');
+const SystemConfig = require('./SystemConfig');
 
 // 模型关联关系
 // Recommendation -> RecommendationTracking (一对多)
@@ -88,4 +90,6 @@ module.exports = {
   ExchangeDaily,
   NewsStock,
   EmailConfig,
+  User,
+  SystemConfig,
 };

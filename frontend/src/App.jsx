@@ -1,13 +1,13 @@
 import React from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import TabBar from './components/Layout/TabBar'
+import { useAuth } from './utils/AuthContext'
 import Home from './pages/Home'
 import Watchlist from './pages/Watchlist'
 import News from './pages/News'
 import Features from './pages/Features'
 import Recommendation from './pages/Recommendation'
 import RecommendationDetail from './pages/Recommendation/Detail'
-import RecommendationCalendar from './pages/Recommendation/Calendar'
 import VolumeAnalysis from './pages/Volume/Analysis'
 import VolumeRealtime from './pages/Volume/Realtime'
 import Position from './pages/Position'
@@ -18,8 +18,31 @@ import FinanceReport from './pages/FinanceReport'
 import ChipDistribution from './pages/ChipDistribution'
 import Rainbow from './pages/Rainbow'
 import Email from './pages/Email'
+import Login from './pages/Auth/Login'
+import Register from './pages/Auth/Register'
+import ForgotPassword from './pages/Auth/ForgotPassword'
 
 function App() {
+  const { isLoggedIn, loading } = useAuth()
+
+  // 初始化中，显示空白
+  if (loading) {
+    return <div style={{ minHeight: '100vh', background: '#FAF0F1' }} />
+  }
+
+  // 未登录：只显示认证页面
+  if (!isLoggedIn) {
+    return (
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
+    )
+  }
+
+  // 已登录：显示所有业务路由 + TabBar
   return (
     <>
       <div style={{ flex: 1, overflow: 'auto' }}>
@@ -33,7 +56,6 @@ function App() {
           {/* 推荐管理 */}
           <Route path="/recommendation" element={<Recommendation />} />
           <Route path="/recommendation/:id" element={<RecommendationDetail />} />
-          <Route path="/recommendation/calendar" element={<RecommendationCalendar />} />
 
           {/* 量能分析 */}
           <Route path="/volume/analysis" element={<VolumeAnalysis />} />

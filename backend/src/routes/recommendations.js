@@ -146,13 +146,19 @@ function findClosestPrice(priceMap, targetDate) {
 // GET /api/recommendations - 获取推荐列表
 router.get('/', async (req, res) => {
   try {
-    const { type, source, date, startDate, endDate, page = 1, pageSize = 50, sort = 'time_desc' } = req.query;
+    const { type, source, date, startDate, endDate, search, page = 1, pageSize = 50, sort = 'time_desc' } = req.query;
     const where = {};
     if (type) where.type = type;
     if (source) where.source = source;
     if (date) where.recommend_date = date;
     if (startDate && endDate) {
       where.recommend_date = { [Op.between]: [startDate, endDate] };
+    }
+    if (search) {
+      where[Op.or] = [
+        { stock_code: { [Op.like]: `%${search}%` } },
+        { stock_name: { [Op.like]: `%${search}%` } },
+      ];
     }
 
     // 排序规则
@@ -194,6 +200,26 @@ router.get('/', async (req, res) => {
       return obj;
     });
 
+    // 统计每只股票在同类型下的历史推荐总次数
+    if (rows.length > 0 && type) {
+      const allRecs = await Recommendation.findAll({
+        where: { type },
+        attributes: ['stock_code'],
+        raw: true,
+      });
+      const recCountMap = {};
+      for (const r of allRecs) {
+        recCountMap[r.stock_code] = (recCountMap[r.stock_code] || 0) + 1;
+      }
+      for (const row of rows) {
+        row.recommend_count = recCountMap[row.stock_code] || 1;
+      }
+    } else {
+      for (const row of rows) {
+        row.recommend_count = 1;
+      }
+    }
+
     // 拉取实时行情，更新 current_price
     const stockCodes = [...new Set(rows.map(r => r.stock_code))];
     const priceMap = await fetchRealtimePrices(stockCodes);
@@ -232,6 +258,40 @@ router.get('/', async (req, res) => {
       page: parseInt(page),
       pageSize: parseInt(pageSize),
     });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/recommendations/date-stats - 获取月份推荐日期统计（早盘/午盘）
+router.get('/date-stats', async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: '需要 startDate 和 endDate 参数' });
+    }
+    const results = await Recommendation.findAll({
+      attributes: [
+        'recommend_date',
+        'type',
+        [require('sequelize').fn('COUNT', 'id'), 'count'],
+      ],
+      where: {
+        recommend_date: { [Op.between]: [startDate, endDate] },
+      },
+      group: ['recommend_date', 'type'],
+      raw: true,
+    });
+    // 转换为 { 'YYYY-MM-DD': { morning: N, afternoon: N } }
+    const stats = {};
+    for (const r of results) {
+      const date = typeof r.recommend_date === 'string'
+        ? r.recommend_date
+        : r.recommend_date.toISOString().split('T')[0];
+      if (!stats[date]) stats[date] = {};
+      stats[date][r.type] = Number(r.count);
+    }
+    res.json({ data: stats });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

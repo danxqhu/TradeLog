@@ -120,7 +120,10 @@ export default function Position() {
             return (
               <div key={pos.id} style={{ padding: '4px 0', borderBottom: '1px solid #f0f0f0' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', lineHeight: '20px' }}>
-                  <div>
+                  <div
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => navigate(`/position/strategy/${pos.stock_code}`)}
+                  >
                     <span style={{ fontWeight: 600, fontSize: 13 }}>{pos.stock_name}</span>
                     <span style={{ fontSize: 11, color: '#999', marginLeft: 4 }}>{pos.stock_code}</span>
                   </div>
@@ -140,7 +143,7 @@ export default function Position() {
                     <Tag
                       color="primary"
                       style={{ fontSize: 10, padding: '0 4px', height: 18, lineHeight: '18px', cursor: 'pointer' }}
-                      onClick={() => { setStrategyPos(pos); setShowStrategy(true) }}
+                      onClick={() => navigate(`/position/strategy/${pos.stock_code}`)}
                     >
                       {pos.configs?.[0]?.strategy_type ? strategies.find(s => s.value === pos.configs[0].strategy_type)?.label || '回本策略' : '策略'}
                     </Tag>

@@ -192,8 +192,8 @@ function getMarketStatus() {
 // 数据库表：market_averages
 
 const AVG_JSON_PATH = path.join(__dirname, '../../data/market_averages.json');
-const PYTHON_SCRIPT = path.join(__dirname, '../scripts/fetch_market_averages.py');
-const IMPORT_SCRIPT = path.join(__dirname, '../scripts/import_averages.js');
+const PYTHON_SCRIPT = path.join(__dirname, '../../scripts/fetch_market_averages.py');
+const IMPORT_SCRIPT = path.join(__dirname, '../../scripts/import_averages.js');
 
 let _avgCache = {
   data: null,       // 缓存的均量数据
@@ -334,17 +334,39 @@ async function getMarketAveragesCached() {
   }
 
   if (needRefresh) {
-    try {
-      await _runPythonScript();
-      _avgCache.data = await _loadFromDB();
-      _avgCache.fetchDate = todayStr;
-      if (_avgCache.data) {
-        console.log(`💹 [均量] 缓存已更新，最新日期: ${_avgCache.data.latestDate}`);
+    if (_avgCache.data) {
+      // ★ 有缓存数据：立即返回，后台异步刷新（避免阻塞 API 导致前端超时）
+      if (!_avgCache.refreshing) {
+        console.log(`💹 [均量] 数据需刷新（最新: ${_avgCache.data.latestDate}，今天: ${todayStr}），后台异步更新...`);
+        _avgCache.refreshing = true;
+        _runPythonScript()
+          .then(async () => {
+            _avgCache.data = await _loadFromDB();
+            _avgCache.fetchDate = todayStr;
+            _avgCache.refreshing = false;
+            if (_avgCache.data) {
+              console.log(`💹 [均量] 后台刷新完成，最新日期: ${_avgCache.data.latestDate}`);
+            }
+          })
+          .catch(err => {
+            _avgCache.refreshing = false;
+            console.error('💹 [均量] 后台刷新失败:', err.message);
+          });
       }
-    } catch (err) {
-      console.error('💹 [均量] 刷新失败:', err.message);
-      if (!_avgCache.data) {
-        _avgCache.data = { ma20: null, ma60: null, latestDate: null, latestTurnover: 0 };
+    } else {
+      // 无缓存（数据库为空）：必须同步等待
+      try {
+        await _runPythonScript();
+        _avgCache.data = await _loadFromDB();
+        _avgCache.fetchDate = todayStr;
+        if (_avgCache.data) {
+          console.log(`💹 [均量] 缓存已更新，最新日期: ${_avgCache.data.latestDate}`);
+        }
+      } catch (err) {
+        console.error('💹 [均量] 刷新失败:', err.message);
+        if (!_avgCache.data) {
+          _avgCache.data = { ma20: null, ma60: null, latestDate: null, latestTurnover: 0 };
+        }
       }
     }
   }

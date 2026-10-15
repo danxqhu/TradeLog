@@ -1,8 +1,12 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 const { sequelize } = require('./models');
 const { startScheduler } = require('./services/scheduler');
+const { authenticateToken } = require('./middleware/auth');
+const { SystemConfig } = require('./models');
+const pkg = require(path.resolve(__dirname, '../package.json'));
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -12,7 +16,23 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// 路由
+// 认证路由（公开接口，不需要 token）
+app.use('/api/auth', require('./routes/auth'));
+
+// 健康检查（公开）
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+});
+
+// 版本信息（公开）
+app.get('/api/version', (req, res) => {
+  res.json({ version: pkg.version, name: pkg.name });
+});
+
+// 其余所有业务路由需要 JWT 认证
+app.use(authenticateToken);
+
+// 业务路由
 app.use('/api/stocks', require('./routes/stocks'));
 app.use('/api/recommendations', require('./routes/recommendations'));
 app.use('/api/volume', require('./routes/volume'));
@@ -22,11 +42,6 @@ app.use('/api/research-reports', require('./routes/researchReports'));
 app.use('/api/calendar', require('./routes/calendar'));
 app.use('/api/market', require('./routes/market'));
 app.use('/api/email', require('./routes/email'));
-
-// 健康检查
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
-});
 
 // 错误处理
 app.use((err, req, res, next) => {
@@ -136,6 +151,44 @@ async function testConnection() {
     } catch (e) {
       console.error('⚠️ recommendations 表新增列失败（可能已存在）:', e.message);
     }
+
+    // 手动补充 position_configs 表新增的列（策略升级）
+    try {
+      const [cols4] = await sequelize.query(
+        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'position_configs'`
+      );
+      const colNames4 = new Set(cols4.map(c => c.COLUMN_NAME));
+      const newCols = [
+        { name: 'base_price', sql: `ALTER TABLE position_configs ADD COLUMN base_price DECIMAL(10,2) NOT NULL DEFAULT 0 COMMENT '基准价格（自定义，跌幅/涨幅计算的起点）'` },
+        { name: 'capital_source', sql: `ALTER TABLE position_configs ADD COLUMN capital_source ENUM('manual','first_buy') NOT NULL DEFAULT 'first_buy' COMMENT '总资金来源'` },
+        { name: 'strategy_direction', sql: `ALTER TABLE position_configs ADD COLUMN strategy_direction ENUM('drop','rise') NOT NULL DEFAULT 'drop' COMMENT '策略方向'` },
+        { name: 'alert_threshold_min', sql: `ALTER TABLE position_configs ADD COLUMN alert_threshold_min INT DEFAULT 80 COMMENT '接近提醒阈值下限(%)'` },
+        { name: 'alert_threshold_max', sql: `ALTER TABLE position_configs ADD COLUMN alert_threshold_max INT DEFAULT 90 COMMENT '接近提醒阈值上限(%)'` },
+        { name: 'last_alert_step', sql: `ALTER TABLE position_configs ADD COLUMN last_alert_step INT DEFAULT 0 COMMENT '上次提醒步骤号'` },
+        { name: 'last_alert_type', sql: `ALTER TABLE position_configs ADD COLUMN last_alert_type VARCHAR(20) DEFAULT '' COMMENT '上次提醒类型'` },
+      ];
+      for (const col of newCols) {
+        if (!colNames4.has(col.name)) {
+          await sequelize.query(col.sql);
+          console.log(`✅ position_configs 表新增 ${col.name} 列`);
+        }
+      }
+    } catch (e) {
+      console.error('⚠️ position_configs 表新增列失败（可能已存在）:', e.message);
+    }
+
+    // 初始化系统配置（注册开关，首次部署默认开放）
+    try {
+      const [regConfig] = await SystemConfig.findOrCreate({
+        where: { key: 'registration_open' },
+        defaults: { key: 'registration_open', value: 'true' },
+      });
+      console.log(`✅ 注册状态: ${regConfig.value === 'true' ? '开放' : '关闭'}`);
+    } catch (e) {
+      console.error('⚠️ 系统配置初始化失败:', e.message);
+    }
+
     // 启动定时任务
     startScheduler();
   } catch (error) {
@@ -145,7 +198,7 @@ async function testConnection() {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 TradeLog 后端服务运行在端口 ${PORT}`);
-  console.log(`📋 版本: v2.0 - 增强上海证券报过滤 (简报/广告/信息披露/公告全面过滤)`);
+  console.log(`📋 版本: v${pkg.version}`);
   testConnection();
 });
 

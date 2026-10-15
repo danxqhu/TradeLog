@@ -8,10 +8,28 @@ const api = axios.create({
   },
 })
 
+// 请求拦截器：自动附加 JWT token
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
 // 响应拦截器
 api.interceptors.response.use(
   (response) => response.data,
   (error) => {
+    // 401 时清除 token，触发路由守卫跳转登录页
+    if (error.response?.status === 401) {
+      localStorage.removeItem('token')
+      localStorage.removeItem('user')
+      // 避免在登录页重复跳转
+      if (window.location.pathname !== '/login') {
+        window.location.href = '/login'
+      }
+    }
     console.error('API Error:', error.response?.data || error.message)
     return Promise.reject(error)
   }
@@ -31,6 +49,7 @@ export const stockApi = {
 export const recommendationApi = {
   getList: (params) => api.get('/recommendations', { params }),
   getById: (id) => api.get(`/recommendations/${id}`),
+  getDateStats: (params) => api.get('/recommendations/date-stats', { params }),
   create: (data) => api.post('/recommendations', data),
   update: (id, data) => api.put(`/recommendations/${id}`, data),
   delete: (id) => api.delete(`/recommendations/${id}`),
@@ -54,14 +73,16 @@ export const volumeApi = {
 export const positionApi = {
   getList: (params) => api.get('/positions', { params }),
   getById: (id) => api.get(`/positions/${id}`),
+  getByCode: (stockCode) => api.get(`/positions/by-code/${stockCode}`),
   create: (data) => api.post('/positions', data),
   update: (id, data) => api.put(`/positions/${id}`, data),
   addPosition: (id, data) => api.post(`/positions/${id}/add`, data),
   closePosition: (id, data) => api.post(`/positions/${id}/close`, data),
-    deletePosition: (id) => api.delete(`/positions/${id}`),
+  deletePosition: (id) => api.delete(`/positions/${id}`),
   getConfig: (id) => api.get(`/positions/${id}/strategy`),
   setConfig: (data) => api.post('/positions/config', data),
   checkAlert: (id, data) => api.post(`/positions/${id}/check-alert`, data),
+  checkAlertByCode: (stockCode, data) => api.post(`/positions/by-code/${stockCode}/check-alert`, data),
   getStrategies: () => api.get('/positions/strategies/list'),
 }
 
@@ -118,4 +139,21 @@ export const marketApi = {
   refreshAverages: () => api.post('/market/refresh-averages'),
 }
 
+// ===== 认证相关 =====
+export const authApi = {
+  login: (data) => api.post('/auth/login', data),
+  register: (data) => api.post('/auth/register', data),
+  getMe: () => api.get('/auth/me'),
+  resetPassword: (data) => api.post('/auth/reset-password', data),
+  getRegistrationStatus: () => api.get('/auth/registration-status'),
+  getSecurityQuestion: (username) => api.get(`/auth/security-question/${username}`),
+  toggleRegistration: (open) => api.put('/auth/registration-toggle', { open }),
+}
+
 export default api
+
+// ===== 系统信息（公开接口，无需 token） =====
+export const systemApi = {
+  getVersion: () => api.get('/version'),
+  getHealth: () => api.get('/health'),
+}

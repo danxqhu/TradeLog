@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, Dialog, Toast } from 'antd-mobile'
+import { systemApi } from '../../services/api'
 
 // 默认功能顺序
 const defaultFeatures = [
@@ -10,7 +11,6 @@ const defaultFeatures = [
   { key: 'shao', title: '邵先生', desc: '邵先生专区', path: '/shao', color: '#ff6b81' },
   { key: 'finance-report', title: '财报分析', desc: '财务报表深度解析', path: '/finance-report', color: '#5b8c00' },
   { key: 'recommendation', title: '推荐管理', desc: '早盘/午盘推荐记录', path: '/recommendation', color: '#1677ff' },
-  { key: 'calendar', title: '推荐日历', desc: '日历视图查看推荐', path: '/recommendation/calendar', color: '#00b578' },
   { key: 'volume-analysis', title: '量能分析', desc: '30日量能平均值', path: '/volume/analysis', color: '#ff8f1f' },
   { key: 'volume-realtime', title: '实时放量缩量', desc: '类似同花顺', path: '/volume/realtime', color: '#e74c3c' },
   { key: 'position', title: '仓位管理', desc: '阶梯式加仓策略', path: '/position', color: '#9c27b0' },
@@ -22,6 +22,14 @@ const defaultFeatures = [
 
 export default function Features() {
   const navigate = useNavigate()
+  const [version, setVersion] = useState('')
+
+  // 获取后端版本号
+  useEffect(() => {
+    systemApi.getVersion()
+      .then(res => setVersion(res.version))
+      .catch(() => setVersion(''))
+  }, [])
   
   // 从 localStorage 读取保存的顺序
   const [features, setFeatures] = useState(() => {
@@ -169,6 +177,19 @@ export default function Features() {
           ))}
         </div>
       </Card>
+
+      {/* 版本信息 */}
+      {version && (
+        <div style={{
+          textAlign: 'center',
+          padding: '16px 0 24px',
+          fontSize: 12,
+          color: '#bbb',
+          letterSpacing: 0.5,
+        }}>
+          TradeLog V{version}
+        </div>
+      )}
     </div>
   )
 }

@@ -305,7 +305,9 @@ export default function Home() {
     }, getMsToNextRefresh())
 
     // SSE 事件监听：后端采集完快照后立即通知前端刷新
-    const evtSource = new EventSource('/api/market/events')
+    const token = localStorage.getItem('token')
+    const sseUrl = token ? `/api/market/events?token=${encodeURIComponent(token)}` : '/api/market/events'
+    const evtSource = new EventSource(sseUrl)
     evtSource.onopen = () => console.log('💹 [SSE] 已连接后端事件流')
     evtSource.addEventListener('snapshot', (e) => {
       console.log('💹 [SSE] 收到快照通知:', e.data)

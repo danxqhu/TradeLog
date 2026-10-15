@@ -20,6 +20,7 @@ const scraperService = require('./scraperService');
 const gsScraperService = require('./gsScraperService');
 const marketDataService = require('./marketDataService');
 const stockDictionary = require('./stockDictionary');
+const positionAlertService = require('./positionAlertService');
 const { MarketSnapshot } = require('../models');
 const marketRoute = require('../routes/market');
 
@@ -158,6 +159,34 @@ async function runAvgRefresh() {
   }
 }
 
+/**
+ * 任务 5：盘中加仓策略提醒（交易时段每分钟）
+ */
+async function checkPositionAlerts() {
+  if (!isTradingWindow()) return;
+  try {
+    const result = await positionAlertService.checkAllPositionAlerts(false);
+    if (result.alerted > 0) {
+      console.log(`🔔 [策略提醒] 盘中检查完成: 检查${result.checked}个策略，提醒${result.alerted}个`);
+    }
+  } catch (err) {
+    console.error('🔔 [策略提醒] 盘中检查失败:', err.message);
+  }
+}
+
+/**
+ * 任务 6：收盘后加仓策略检查（15:30）
+ */
+async function checkPostMarketAlerts() {
+  try {
+    console.log('🔔 [策略提醒] 开始收盘后检查...');
+    const result = await positionAlertService.checkAllPositionAlerts(true);
+    console.log(`🔔 [策略提醒] 收盘后检查完成: 检查${result.checked}个策略，提醒${result.alerted}个`);
+  } catch (err) {
+    console.error('🔔 [策略提醒] 收盘后检查失败:', err.message);
+  }
+}
+
 // ==================== 启动调度器 ====================
 
 function startScheduler() {
@@ -203,6 +232,27 @@ function startScheduler() {
     }
   }, { timezone: TZ });
   console.log('   💹 均量刷新：交易日 1:00 + 15:10:05');
+
+  // ---- 加仓策略提醒：盘中交易时段每分钟 :15 秒触发 ----
+  const alertCrons = [
+    '15 9 * * 1-5',      // 9:15 (不执行，仅占位)
+    '25,30-59 9 * * 1-5', // 9:25 + 9:30-9:59
+    '* 10-11 * * 1-5',    // 10:00-11:59（isTradingWindow 精确过滤到 11:30）
+    '* 13-14 * * 1-5',    // 13:00-14:59
+    '0 15 * * 1-5',       // 15:00 收盘
+  ];
+  alertCrons.forEach(expr => {
+    cron.schedule(expr, () => checkPositionAlerts(), { timezone: TZ });
+  });
+  console.log('   🔔 加仓策略提醒：交易时段 9:30-11:30/13:00-15:00（每分钟）');
+
+  // ---- 收盘后加仓策略检查：交易日 15:30 ----
+  cron.schedule('30 15 * * 1-5', () => {
+    if (marketDataService.isTradingDay(getBeijingTime())) {
+      checkPostMarketAlerts();
+    }
+  }, { timezone: TZ });
+  console.log('   🔔 收盘后策略检查：交易日 15:30');
 
 
 }

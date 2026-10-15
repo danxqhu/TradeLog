@@ -64,7 +64,9 @@ export default function News() {
     setScrapeProgress({ stage: '正在连接...', percent: 0, message: '' })
 
     // 1. 先建立 SSE 连接，监听后端推送的进度
-    const evtSource = new EventSource('/api/shanghai-news/scrape-progress')
+    const token = localStorage.getItem('token')
+    const sseUrl = token ? `/api/shanghai-news/scrape-progress?token=${encodeURIComponent(token)}` : '/api/shanghai-news/scrape-progress'
+    const evtSource = new EventSource(sseUrl)
     evtSource.addEventListener('progress', (e) => {
       try {
         setScrapeProgress(JSON.parse(e.data))
