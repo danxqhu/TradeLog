@@ -260,7 +260,15 @@ router.get('/averages-trend', async (req, res) => {
 });
 
 // POST /api/market/refresh-averages - 手动刷新均量数据 + 交易所成交额
+// 采用后台异步模式：立即返回，后台完成后通过 SSE 通知前端
 router.post('/refresh-averages', async (req, res) => {
+  // 立即返回，不等待后台任务
+  res.json({
+    success: true,
+    message: '刷新任务已启动，完成后自动更新',
+  });
+
+  // 后台异步执行
   try {
     console.log('💹 [手动刷新] 开始刷新均量数据...');
     const avgData = await marketDataService.refreshMarketAverages();
@@ -272,15 +280,8 @@ router.post('/refresh-averages', async (req, res) => {
 
     // SSE 通知前端刷新
     broadcast('averages', { refreshed: true, latestDate: avgData.latestDate });
-
-    res.json({
-      success: true,
-      message: '均量数据已刷新',
-      latestDate: avgData.latestDate,
-    });
   } catch (error) {
     console.error('手动刷新均量失败:', error.message);
-    res.status(500).json({ error: '手动刷新均量失败: ' + error.message });
   }
 });
 

@@ -58,8 +58,11 @@ export default function Home() {
   const [averagesTrend, setAveragesTrend] = useState([]) // 均量趋势数据（最近60个交易日）
   const [incompleteCount, setIncompleteCount] = useState(0) // 不完整数据数量
   const [trendRange, setTrendRange] = useState(60) // 趋势图显示范围：20/60/120/250
-  const [exchangeData, setExchangeData] = useState([]) // 沪深A股成交额数据
+  const [exchangeData, setExchangeData] = useState(null) // 沪深A股成交额数据（null=未加载）
   const [exchangeRange, setExchangeRange] = useState(30) // 交易所卡片图显示范围：30或60
+  const [averagesError, setAveragesError] = useState(false) // 均量数据获取失败
+  const averagesFailCount = useRef(0) // 连续失败计数
+  const averagesErrorRef = useRef(false) // ref 版本，供定时器闭包读取
 
   // 上一个/下一个交易日
   const getCurrentDateIdx = () => {
@@ -108,10 +111,18 @@ export default function Home() {
     try {
       const res = await marketApi.getAverages()
       setAverages(res.data || { ma20: null, ma60: null, latestDate: null, latestTurnover: 0 })
+      setAveragesError(false)
+      averagesErrorRef.current = false
+      averagesFailCount.current = 0
     } catch (err) {
       console.error('获取平均成交额失败:', err)
-      // 失败时也设置空数据，避免一直转圈
-      setAverages({ ma20: null, ma60: null, latestDate: null, latestTurnover: 0, error: true })
+      averagesFailCount.current += 1
+      if (averagesFailCount.current >= 3) {
+        // 连续失败3次后停止自动重试，显示错误提示
+        setAveragesError(true)
+        averagesErrorRef.current = true
+        setAverages({ ma20: null, ma60: null, latestDate: null, latestTurnover: 0, error: true })
+      }
     }
   }, [])
 
@@ -134,7 +145,7 @@ export default function Home() {
       setExchangeData(Array.isArray(res) ? res : res.data || [])
     } catch (err) {
       console.error('获取沪深A股成交额失败:', err)
-      setExchangeData([])
+      setExchangeData([]) // 失败时设为空数组，区分于 null（未加载）
     }
   }, [])
 
@@ -292,8 +303,10 @@ export default function Home() {
       const waitMs = getMsToNextRefresh()
       timerRef.current = setTimeout(() => {
         loadData(false)
-        // 均量数据也一起轮询，确保收盘后自动更新
-        fetchAverages()
+        // 均量数据：连续失败后不再自动轮询（用 ref 避免闭包陷阱）
+        if (!averagesErrorRef.current) {
+          fetchAverages()
+        }
         scheduleNextRefresh()
       }, waitMs)
     }
@@ -312,11 +325,17 @@ export default function Home() {
     evtSource.addEventListener('snapshot', (e) => {
       console.log('💹 [SSE] 收到快照通知:', e.data)
       loadData(false)
-      fetchAverages()
+      if (!averagesErrorRef.current) {
+        fetchAverages()
+      }
     })
     // 均量数据刷新通知（收盘后 17:00 抓取完成）
     evtSource.addEventListener('averages', (e) => {
       console.log('💹 [SSE] 收到均量刷新通知:', e.data)
+      // SSE 通知时重置失败计数，允许重新获取
+      averagesFailCount.current = 0
+      averagesErrorRef.current = false
+      setAveragesError(false)
       fetchAverages()
       fetchAveragesTrend()
       fetchExchangeData()
@@ -344,17 +363,16 @@ export default function Home() {
   // 手动刷新均量数据
   const handleRefreshAverages = async () => {
     setRefreshingAverages(true)
+    setAveragesError(false)
+    averagesErrorRef.current = false
+    averagesFailCount.current = 0
     try {
-      // 调用后端接口刷新均量
+      // 调用后端接口刷新均量（后台异步执行，完成后通过 SSE 通知）
       await marketApi.refreshAverages()
-      // 刷新前端数据
-      await fetchAverages()
-      await fetchAveragesTrend()
-      await fetchExchangeData()
-      Toast.show('均量数据已刷新')
+      Toast.show('刷新任务已启动，完成后自动更新')
     } catch (err) {
       console.error('刷新均量失败:', err)
-      Toast.show('刷新失败')
+      Toast.show('刷新失败，请稍后再试')
     } finally {
       setRefreshingAverages(false)
     }
@@ -760,7 +778,12 @@ export default function Home() {
             {refreshingAverages ? <SpinLoading style={{ '--size': '14px' }} /> : '刷新'}
           </Button>
         </div>
-        {!averages ? (
+        {averagesError ? (
+          <div style={{ textAlign: 'center', padding: '16px 0', color: '#999', fontSize: 13 }}>
+            <div style={{ fontSize: 24, marginBottom: 8 }}>⚠️</div>
+            <div>数据获取失败，请点击上方「刷新」按钮重试</div>
+          </div>
+        ) : !averages ? (
           <div style={{ textAlign: 'center', padding: '16px 0', color: '#ccc' }}>
             <SpinLoading style={{ '--size': '20px' }} />
           </div>
@@ -930,9 +953,14 @@ export default function Home() {
             数据来源：AKShare
           </span>
         </div>
-        {exchangeData.length === 0 ? (
+        {exchangeData === null ? (
           <div style={{ textAlign: 'center', padding: '16px 0', color: '#ccc' }}>
             <SpinLoading style={{ '--size': '20px' }} />
+          </div>
+        ) : exchangeData.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '16px 0', color: '#999', fontSize: 13 }}>
+            <div style={{ fontSize: 24, marginBottom: 8 }}>⚠️</div>
+            <div>数据获取失败，请刷新页面重试</div>
           </div>
         ) : (
           <>

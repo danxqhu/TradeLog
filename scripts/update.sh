@@ -7,6 +7,13 @@
 
 set -e
 
+# 确定使用的 compose 命令（新版 Docker 用 `docker compose`，旧版用 `docker-compose`）
+if command -v docker-compose &> /dev/null; then
+    COMPOSE_CMD="docker-compose"
+else
+    COMPOSE_CMD="docker compose"
+fi
+
 echo "🔄 TradeLog 热更新开始..."
 
 # 拉取最新代码（如果是 git 管理）
@@ -19,17 +26,17 @@ fi
 case "${1:-all}" in
     frontend)
         echo "🎨 更新前端..."
-        docker-compose -f docker-compose.yml build tradelog-frontend
-        docker-compose -f docker-compose.yml up -d tradelog-frontend
+        $COMPOSE_CMD -f docker-compose.yml build tradelog-frontend
+        $COMPOSE_CMD -f docker-compose.yml up -d tradelog-frontend
         ;;
     backend)
         echo "⚙️  更新后端..."
-        docker-compose -f docker-compose.yml build tradelog-backend
-        docker-compose -f docker-compose.yml up -d tradelog-backend
+        $COMPOSE_CMD -f docker-compose.yml build tradelog-backend
+        $COMPOSE_CMD -f docker-compose.yml up -d tradelog-backend
         ;;
     all)
         echo "🔨 重建所有服务..."
-        docker-compose -f docker-compose.yml up -d --build
+        $COMPOSE_CMD -f docker-compose.yml up -d --build
         ;;
     *)
         echo "用法: ./scripts/update.sh [frontend|backend|all]"
@@ -43,7 +50,7 @@ sleep 5
 
 # 检查状态
 echo "📊 服务状态："
-docker-compose ps
+$COMPOSE_CMD ps
 
 echo ""
 echo "✅ 更新完成！"

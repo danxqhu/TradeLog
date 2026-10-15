@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { NavBar, Card, Button, Input, Toast, List, Dialog, SpinLoading } from 'antd-mobile'
 import { useNavigate } from 'react-router-dom'
+import api from '../../services/api'
 
 export default function Email() {
   const navigate = useNavigate()
@@ -18,8 +19,7 @@ export default function Email() {
   // 加载配置
   useEffect(() => {
     setLoading(true)
-    fetch('/api/email/config')
-      .then(res => res.json())
+    api.get('/email/config')
       .then(data => {
         setConfig({
           smtp_host: data.smtp_host || 'smtp.qq.com',
@@ -45,12 +45,7 @@ export default function Email() {
     }
     setSaving(true)
     try {
-      const res = await fetch('/api/email/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
-      })
-      const data = await res.json()
+      const data = await api.post('/email/config', config)
       if (data.success) {
         Toast.show({ content: '配置保存成功', icon: 'success' })
       } else {
@@ -74,12 +69,7 @@ export default function Email() {
       onConfirm: async () => {
         setTesting(true)
         try {
-          const res = await fetch('/api/email/test', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(config),
-          })
-          const data = await res.json()
+          const data = await api.post('/email/test', config)
           if (data.sent) {
             Toast.show({ content: '测试邮件发送成功', icon: 'success' })
           } else {
