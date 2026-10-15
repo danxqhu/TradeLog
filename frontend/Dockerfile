@@ -5,7 +5,7 @@
 # - 开发：target=development，Vite 开发服务器热更新
 
 # ---------- 依赖安装层（development target 使用） ----------
-FROM node:18-alpine AS deps
+FROM node:20.18-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
 RUN npm install

@@ -1,5 +1,5 @@
 # ---------- 依赖安装层（development target 使用） ----------
-FROM node:18-alpine AS deps
+FROM node:20.18-alpine AS deps
 WORKDIR /app
 # 时区支持：安装 tzdata，设置 Asia/Shanghai
 RUN apk add --no-cache tzdata
@@ -8,7 +8,7 @@ COPY package*.json ./
 RUN npm install
 
 # ---------- 生产阶段：node 直启 + Python 脚本支持 ----------
-FROM node:18-alpine AS production
+FROM node:20.18-alpine AS production
 WORKDIR /app
 # 时区支持 + Python3 + curl（定时任务需要调用 Python 脚本和 curl）
 # akshare 依赖 pandas/lxml，需要编译环境
@@ -24,10 +24,8 @@ COPY scripts ./scripts
 # Python 脚本写入中间 JSON 的目录（运行时动态生成，不 COPY）
 RUN mkdir -p /app/data
 EXPOSE 3001
-# --experimental-fetch：node:18-alpine 镜像内 Node 小版本可能较老，
-# File/Blob 等 Web API 未全局暴露，undici 会报 ReferenceError: File is not defined。
-# 加上此 flag 确保全局挂载 fetch 相关 WebAPI，与本地新版 Node 18 行为一致。
-CMD ["node", "--experimental-fetch", "src/app.js"]
+# Node 20 已原生支持 File/Blob 等 Web API，无需 --experimental-fetch
+CMD ["node", "src/app.js"]
 
 # ---------- 开发阶段：nodemon 热更新 ----------
 FROM deps AS development
