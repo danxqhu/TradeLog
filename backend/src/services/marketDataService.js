@@ -354,19 +354,25 @@ async function getMarketAveragesCached() {
           });
       }
     } else {
-      // 无缓存（数据库为空）：必须同步等待
-      try {
-        await _runPythonScript();
-        _avgCache.data = await _loadFromDB();
-        _avgCache.fetchDate = todayStr;
-        if (_avgCache.data) {
-          console.log(`💹 [均量] 缓存已更新，最新日期: ${_avgCache.data.latestDate}`);
-        }
-      } catch (err) {
-        console.error('💹 [均量] 刷新失败:', err.message);
-        if (!_avgCache.data) {
-          _avgCache.data = { ma20: null, ma60: null, latestDate: null, latestTurnover: 0 };
-        }
+      // 无缓存（数据库为空）：也采用异步模式，避免阻塞 API 导致前端超时
+      // 立即返回空数据，后台异步抓取
+      if (!_avgCache.refreshing) {
+        console.log('💹 [均量] 数据库为空，后台异步初始化...');
+        _avgCache.refreshing = true;
+        _avgCache.data = { ma20: null, ma60: null, latestDate: null, latestTurnover: 0 };
+        _runPythonScript()
+          .then(async () => {
+            _avgCache.data = await _loadFromDB();
+            _avgCache.fetchDate = todayStr;
+            _avgCache.refreshing = false;
+            if (_avgCache.data) {
+              console.log(`💹 [均量] 异步初始化完成，最新日期: ${_avgCache.data.latestDate}`);
+            }
+          })
+          .catch(err => {
+            _avgCache.refreshing = false;
+            console.error('💹 [均量] 异步初始化失败:', err.message);
+          });
       }
     }
   }
