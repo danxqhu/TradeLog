@@ -15,7 +15,7 @@ const { execFile } = require('child_process');
 const path = require('path');
 
 // Python 脚本路径（AKShare 拉取全市场 A 股）
-const FETCH_STOCKS_SCRIPT = path.join(__dirname, '../../../scripts/fetch_stocks.py');
+const FETCH_STOCKS_SCRIPT = path.join(__dirname, '../../scripts/fetch_stocks.py');
 
 // 安全阈值：AKShare 返回数量低于此值则判定接口异常，终止同步防止误标记退市
 const MIN_SAFE_COUNT = 5400;
