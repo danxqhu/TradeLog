@@ -9,10 +9,13 @@
  *      刷新 market_averages 表，前端“历史平均成交额”“均量趋势”“沪深A股成交额”三个卡片同步更新
  *   5. ~~股票词典增量同步~~ 已改为手动触发，不再自动执行
  *   6. ~~交易所官网成交额抓取~~ 已废弃，卡片4改用 AKShare 数据，不再直接抓交易所官网
+ *   7. 每日追资金：节点时间由页面配置（money_chase_schedules 表，默认 9:50 / 10:00），
+ *      配置变更后由路由调用 reloadMoneyChaseSchedules() 热更新，无需重启服务
  *
  * 规则：
  *   - 禁止 setInterval / setTimeout 做分钟级轮询（防时间漂移）
  *   - 所有 cron 表达式显式指定 timezone: 'Asia/Shanghai'
+ *   - 需要运行期增删改的任务，用 Map 持有 cronTask 句柄，先 stop 再重建（避免重复注册）
  *   - Docker 容器通过挂载宿主机 /etc/localtime + TZ=Asia/Shanghai 对齐时钟
  */
 const cron = require('node-cron');
@@ -21,10 +24,14 @@ const gsScraperService = require('./gsScraperService');
 const marketDataService = require('./marketDataService');
 const stockDictionary = require('./stockDictionary');
 const positionAlertService = require('./positionAlertService');
-const { MarketSnapshot } = require('../models');
+const moneyChaseService = require('./moneyChaseService');
+const { MarketSnapshot, MoneyChaseSchedule } = require('../models');
 const marketRoute = require('../routes/market');
 
 const TZ = 'Asia/Shanghai';
+
+// 每日追资金的动态 cron 句柄：schedule.id -> cronTask
+const moneyChaseTasks = new Map();
 
 // ==================== 工具函数 ====================
 
@@ -187,6 +194,58 @@ async function checkPostMarketAlerts() {
   }
 }
 
+/**
+ * 任务 7：每日追资金（节点由页面配置）
+ * 失败不重试、不补跑：接口只调一次，原因写入批次记录，页面弹窗告知人工
+ */
+async function runMoneyChaseNode(scheduleId) {
+  try {
+    const item = await MoneyChaseSchedule.findByPk(scheduleId);
+    if (!item || !item.enabled) return;
+    if (item.trading_day_only && !marketDataService.isTradingDay(getBeijingTime())) {
+      console.log(`⏰ [追资金] ${item.time_hm} 非交易日，跳过`);
+      return;
+    }
+    await moneyChaseService.autoRun(item.toJSON());
+  } catch (err) {
+    console.error('⏰ [追资金] 定时节点执行失败:', err.message);
+  }
+}
+
+/**
+ * 按 money_chase_schedules 表重建 cron 注册（启动时 + 页面增删改后调用）
+ * 表达式：秒固定 5，分钟取配置，限周一至周五（交易日再由 isTradingDay 精确过滤）
+ */
+async function reloadMoneyChaseSchedules() {
+  try {
+    const rows = await MoneyChaseSchedule.findAll({ order: [['time_hm', 'ASC']] });
+
+    // 先停掉全部旧句柄，再按当前表内容重建（时间可能被改，不能只比对 enabled）
+    for (const [, task] of moneyChaseTasks) {
+      try { task.stop(); } catch (e) { /* 停止失败无妨 */ }
+    }
+    moneyChaseTasks.clear();
+
+    const active = [];
+    for (const row of rows) {
+      if (!row.enabled) continue;
+      if (!/^\d{2}:\d{2}$/.test(row.time_hm || '')) {
+        console.warn(`⚠️ [追资金] 节点时间格式非法，跳过注册: ${row.time_hm}`);
+        continue;
+      }
+      const [h, m] = row.time_hm.split(':').map(Number);
+      const task = cron.schedule(`5 ${m} ${h} * * 1-5`, () => runMoneyChaseNode(row.id), { timezone: TZ });
+      moneyChaseTasks.set(row.id, task);
+      active.push(`${row.time_hm}(${row.sector_source === 'fixed' ? `固定板块${(row.fixed_sectors || []).join('/') || '未填'}` : `自动Top${row.top_n}`})`);
+    }
+    console.log(`   💰 每日追资金：${active.length ? active.join('、') : '未启用任何节点'}（交易日周一至周五，秒位 :05）`);
+    return { ok: true, count: active.length };
+  } catch (err) {
+    console.error('⚠️ [追资金] 定时节点注册失败:', err.message);
+    return { ok: false, error: err.message };
+  }
+}
+
 // ==================== 启动调度器 ====================
 
 function startScheduler() {
@@ -254,7 +313,9 @@ function startScheduler() {
   }, { timezone: TZ });
   console.log('   🔔 收盘后策略检查：交易日 15:30');
 
+  // ---- 每日追资金：节点时间由页面配置，默认 9:50 + 10:00 ----
+  reloadMoneyChaseSchedules();
 
 }
 
-module.exports = { startScheduler };
+module.exports = { startScheduler, reloadMoneyChaseSchedules };

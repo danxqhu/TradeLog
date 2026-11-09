@@ -28,5 +28,17 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        // echarts + zrender 体积最大，单独拆一个 chunk，只让追资金 K 线图页面去加载
+        manualChunks(id) {
+          if (
+            id.includes('node_modules/echarts') ||
+            id.includes('node_modules/zrender') ||
+            id.includes('node_modules/echarts-for-react')
+          ) return 'echarts'
+        },
+      },
+    },
   },
 })

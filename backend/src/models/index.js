@@ -17,6 +17,15 @@ const NewsStock = require('./NewsStock');
 const EmailConfig = require('./EmailConfig');
 const User = require('./User');
 const SystemConfig = require('./SystemConfig');
+const MoneyChaseRun = require('./MoneyChaseRun');
+const MoneyChaseCandidate = require('./MoneyChaseCandidate');
+const MoneyChaseManualStock = require('./MoneyChaseManualStock');
+const MoneyChaseSchedule = require('./MoneyChaseSchedule');
+const MoneyChaseRule = require('./MoneyChaseRule');
+const MoneyChaseSnapshot = require('./MoneyChaseSnapshot');
+const FortuneCriterion = require('./FortuneCriterion');
+const FortuneStock = require('./FortuneStock');
+const FortuneEvaluation = require('./FortuneEvaluation');
 
 // 模型关联关系
 // Recommendation -> RecommendationTracking (一对多)
@@ -73,6 +82,29 @@ NewsStock.belongsTo(Stock, {
   as: 'stock',
 });
 
+// MoneyChaseRun -> MoneyChaseCandidate (一对多，批次-候选股)
+MoneyChaseRun.hasMany(MoneyChaseCandidate, {
+  foreignKey: 'run_id',
+  as: 'candidates',
+  onDelete: 'CASCADE',
+});
+MoneyChaseCandidate.belongsTo(MoneyChaseRun, {
+  foreignKey: 'run_id',
+  as: 'run',
+});
+
+// Stock -> MoneyChaseCandidate (一对多，股票被哪些批次选为候选)
+Stock.hasMany(MoneyChaseCandidate, {
+  foreignKey: 'symbol',
+  sourceKey: 'code',
+  as: 'chaseCandidates',
+});
+MoneyChaseCandidate.belongsTo(Stock, {
+  foreignKey: 'symbol',
+  targetKey: 'code',
+  as: 'stock',
+});
+
 module.exports = {
   sequelize,
   Stock,
@@ -92,4 +124,13 @@ module.exports = {
   EmailConfig,
   User,
   SystemConfig,
+  MoneyChaseRun,
+  MoneyChaseCandidate,
+  MoneyChaseManualStock,
+  MoneyChaseSchedule,
+  MoneyChaseRule,
+  MoneyChaseSnapshot,
+  FortuneCriterion,
+  FortuneStock,
+  FortuneEvaluation,
 };

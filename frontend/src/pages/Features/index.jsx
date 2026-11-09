@@ -17,6 +17,8 @@ const defaultFeatures = [
   { key: 'chip-distribution', title: '筹码分布', desc: '个股筹码结构分析', path: '/chip-distribution', color: '#2196f3' },
   { key: 'rainbow', title: '七道彩虹', desc: '开发中', path: '/rainbow', color: '#ff4081' },
   { key: 'email', title: '邮件推送', desc: 'SMTP 通知配置', path: '/email', color: '#8B3A42' },
+  { key: 'money-chase', title: '每日追资金', desc: '板块资金流选股', path: '/money-chase', color: '#C4737A' },
+  { key: 'fortune', title: '胡胖胖招财进宝', desc: '加权评分选股', path: '/fortune', color: '#8B3A42' },
 ]
 
 

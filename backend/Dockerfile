@@ -21,6 +21,8 @@ RUN npm install --omit=dev
 COPY src ./src
 # 定时任务依赖的 Python 抓取脚本 + Node.js 导入脚本
 COPY scripts ./scripts
+# 每日追资金规则单一真源（改文件后调 POST /api/money-chase/rules/reseed 即可热同步，无需重启）
+COPY config ./config
 # Python 脚本写入中间 JSON 的目录（运行时动态生成，不 COPY）
 RUN mkdir -p /app/data
 EXPOSE 3001

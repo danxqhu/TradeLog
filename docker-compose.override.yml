@@ -12,6 +12,10 @@ services:
       target: development
     volumes:
       - ./backend/src:/app/src
+      # 每日追资金规则单一真源：宿主机改文件后调 /api/money-chase/rules/reseed 即热同步
+      - ./backend/config:/app/config
+      # Python 抓取脚本：开发环境挂载，改脚本不需 rebuild
+      - ./backend/scripts:/app/scripts
       - ./backend/.env:/app/.env
       # 宿主机时间文件（只读），复用宿主机时钟
       - /etc/localtime:/etc/localtime:ro

@@ -42,6 +42,8 @@ app.use('/api/research-reports', require('./routes/researchReports'));
 app.use('/api/calendar', require('./routes/calendar'));
 app.use('/api/market', require('./routes/market'));
 app.use('/api/email', require('./routes/email'));
+app.use('/api/money-chase', require('./routes/moneyChase'));
+app.use('/api/fortune', require('./routes/fortune'));
 
 // 错误处理
 app.use((err, req, res, next) => {
@@ -93,8 +95,22 @@ async function testConnection() {
     }
 
     // 同步模型（不使用 alter，避免重复创建索引）
-    await sequelize.sync();
-    console.log('✅ 数据库模型同步完成');
+    // 逐表 sync：sequelize.sync() 内部是串行的，某张表建表语句报错会直接抛出并跳过后面所有表，
+    // 结果就是功能页报 "Table xxx doesn't exist"，而启动日志只有一行笼统提示，很难定位。
+    const syncFailed = [];
+    for (const [name, model] of Object.entries(sequelize.models)) {
+      try {
+        await model.sync();
+      } catch (e) {
+        syncFailed.push(name);
+        console.error(`❌ 建表失败 ${name}（${model.tableName}）:`, e.message);
+      }
+    }
+    console.log(
+      syncFailed.length
+        ? `⚠️  模型同步结束，${syncFailed.length} 张表建表失败：${syncFailed.join(', ')}（对应功能会报“表不存在”，按上面的错误修正模型后重启即可）`
+        : '✅ 数据库模型同步完成'
+    );
 
     // 手动补充 Stock 模型新增的列（sequelize.sync() 不会自动添加新列）
     try {
@@ -187,6 +203,26 @@ async function testConnection() {
       console.log(`✅ 注册状态: ${regConfig.value === 'true' ? '开放' : '关闭'}`);
     } catch (e) {
       console.error('⚠️ 系统配置初始化失败:', e.message);
+    }
+
+    // 初始化「每日追资金」：规则真源文件播种到规则表 + 预置默认定时节点
+    try {
+      const moneyChase = require('./services/moneyChaseService');
+      const seeded = await moneyChase.seedRules();
+      const sched = await moneyChase.ensureDefaultSchedules();
+      const stale = await moneyChase.cleanupStaleRuns();
+      console.log(`💰 [追资金] 规则同步 v${seeded.version || '?'}：新增 ${seeded.inserted || 0} 条，更新 ${seeded.updated || 0} 条；定时节点预置 ${sched.created || 0} 条；清理未完成批次 ${stale.cleaned || 0} 条`);
+    } catch (e) {
+      console.error('⚠️ [追资金] 规则/定时初始化失败:', e.message);
+    }
+
+    // 初始化「胡胖胖招财进宝」：判定项真源文件播种到 fortune_criteria 表
+    try {
+      const fortune = require('./services/fortuneService');
+      const fc = await fortune.seedCriteria();
+      console.log(`🧧 [招财进宝] 判定项同步 v${fc.version || '?'}：新增 ${fc.inserted || 0} 条，更新 ${fc.updated || 0} 条`);
+    } catch (e) {
+      console.error('⚠️ [招财进宝] 判定项初始化失败:', e.message);
     }
 
     // 启动定时任务
