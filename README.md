@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-移动端 Web 股票交易助手，包含推荐跟踪、量能分析、仓位管理、资讯抓取、每日追资金（板块资金流→候选股自动打分）等功能。
+移动端 Web 股票交易助手，包含推荐跟踪、量能分析、仓位管理、资讯抓取、每日追资金（板块资金流→候选股自动打分）、胡胖胖招财进宝（多理论加权打分 + 趋势/反转双赛道榜单）等功能。
 技术栈：React 18 + Vite + Ant Design Mobile + ECharts（前端）| Node.js + Express + Sequelize（后端）| MySQL 8.0（数据库）| Python3 + AKShare/pandas（数据抓取与打分脚本）| Docker 部署。
 
 部署架构复用 MealLog 服务器：共享 `meal-log-network` 网络，二级域名 `tradelog.meallog.eu.cc`，不映射宿主机端口。
@@ -230,6 +230,23 @@ TradeLog/
 | `/api/money-chase/schedules` | GET/POST | 定时节点列表 / 新增（保存即热更新 cron） |
 | `/api/money-chase/schedules/:id` | PUT/DELETE | 修改 / 删除节点 |
 | `/api/money-chase/schedules/:id/trigger` | POST | 按该配置立即跑一次（验证配置用） |
+| `/api/fortune/criteria` | GET/PUT | 招财进宝判定项全文（买入 A / 衰竭 W / 反转 B 三族 + 阈值 + 分档 + 公式）/ 保存开关与子项分值 |
+| `/api/fortune/criteria/reset` | POST | 恢复出厂并重播种（人工新增的行只停用不删） |
+| `/api/fortune/sell-config` | PUT | 保存 `wp_*`/`bp_*` 阈值、衰竭归一模式、综合分参数（wA/wB）、`chip` 限流、`sell_bands`/`reversal_bands`（覆盖值存 SystemConfig） |
+| `/api/fortune/sell-config/reset` | POST | 清除上述覆盖，回到配置文件默认 |
+| `/api/fortune/preview` | POST | 不落库的总分/分档实时预览 |
+| `/api/fortune/evaluate` | POST | 人工评估落库（快照含 A/B/W 与 S_A/S_B） |
+| `/api/fortune/evaluations` | GET | 复盘列表（`?symbol=&date=&start=&end=`） |
+| `/api/fortune/evaluations/:id` | GET/DELETE | 单份评估全文（含 `pre_filter_history` 粗筛存档）/ 删除 |
+| `/api/fortune/stocks` | GET/POST | 股票池列表 / 录入（重复代码就地更新） |
+| `/api/fortune/stocks/batch` | POST | 批量加入股票池 |
+| `/api/fortune/stocks/clear` | POST | 清空股票池（不影响已存评估） |
+| `/api/fortune/stocks/:symbol` | DELETE | 移出一只 |
+| `/api/fortune/scan` | POST | 发起打分 `{symbols, date?, select?}`，秒返 scanId；默认走「粗筛 → 精选筹码」两级 |
+| `/api/fortune/scan/select` | POST | 只发起精选筹码轮（≤`select_max_chip` 只，用真实接口补 B7） |
+| `/api/fortune/scan/:scanId` | GET | 轮询进度（`stage`/`progress`/`chip_done`/`chip_total`/`chip_skipped`/`result`） |
+| `/api/fortune/leaderboard?date=` | GET | 读已落库榜单（0 外部请求，页面秒开） |
+| `/api/fortune/score/:symbol?date=&with_chip=1` | GET | 单票按需重算；`with_chip=1` 额外拉真实筹码补 B7（历史时间点后端强制忽略） |
 | `/api/calendar` | GET | 交易日历 |
 | `/api/calendar/month/:year/:month` | GET | 某月日历 |
 | `/api/calendar/trading-days/count` | GET | 计算交易日数 |
@@ -768,6 +785,94 @@ python3 scripts/fetch_money_chase.py --action analyze --symbol 002913 --sector �
 
 ---
 
+## 胡胖胖招财进宝（Fortune）
+
+- **页面路径**：`/fortune`（功能页 → 「胡胖胖招财进宝」方块，股票池 + 批量打分榜单）；单票打分明细 `/fortune/stock/:symbol`（点股票名进入）
+- **定位**：在「每日追资金」的日线流水线之上做**多理论加权打分 + 双赛道排序榜单**的决策辅助工具。不接持仓、不自动下单、**不进定时任务**（打分全部由页面手动发起），买卖决策由人工完成。
+- **数据口径**：所有判定都基于**连续 120 根前复权日线序列**（`kline.bars/ma`，由追资金流水线输出）。M1 道氏 / M2 葛兰碧在 Node 侧判，M3~M8 与 W 组由 `fetch_money_chase.py` 输出「事实 + 命中」，Node 侧按配置文件折算成分数；取不到序列时才降级近似，并在页面标注【数据降级近似判定】。
+
+### 三个基础分 + 两套综合分
+
+| 分数 | 含义 | 算法 | 分档 |
+|------|------|------|------|
+| `A_score` | 趋势买入分 | Σ(模块分[0-100] × 权重) ÷ Σ(参与计算的启用权重)，封顶 100 | 优先关注 ≥80 / 观察 ≥70 / 观望 ≥50 / 回避 |
+| `B_score` | 超跌反转买入分（B1~B7） | 命中子项分值**累加封顶 100**（B1 三档取一、B5 单根/组合互斥取最高），与 A 完全独立、不参与任何加权 | 无底部反转信号 <20 / 初步止跌 ≥20 / 具备反转条件 ≥40 / 反转共振 ≥65 |
+| `W_score` | 衰竭止盈分（W1~W8） | 模式 A：命中分值 ÷ 启用且适用子项满分 ×100；模式 B：直接累加封顶 100。A、B 两条赛道**共用**同一个 W | 低衰竭 <20 / 轻度 ≥20 / 中度 ≥40 / 重度 ≥65 |
+| `S_A` | 趋势池排序分 | raw = `A_score`×wA − `W_score`×wB | 只用于榜单排序，不覆盖 A |
+| `S_B` | 反转池排序分 | raw = `B_score`×wA − `W_score`×wB | 同上 |
+
+- wA/wB 默认 0.8 / 0.2（可配）；raw 先钳位到 [-100×wB, 100×wA]（默认 [-20, 80]）再 +100×wB，保留 1 位小数 → **输出恒定 0～100**。
+- 任一入参为 null（W 未判定 / B 组关闭）→ `S_A`/`S_B` 直接记 null，页面显「未判定」而不是 0 分。
+- v4.0 起旧的「新开仓综合价值分」的高位争议强制压低（veto）与硬拦截分流观察池（hard_mode）**已废除** —— 衰竭惩罚已经在公式里，不再叠两套规则。
+
+### B 超跌反转组（B1~B7）
+
+整组前置：现价距 60 日高回撤 ≥ `bp_drawdown_min_pct`（15%）才算超跌，不成立则 B1~B7 全不计分。默认**整组关闭**（b1~b7 行 `enabled=false`）：关上时 `B_score`/`S_B` 记「未判定」（不是 0 分），反转池置灰；要做超跌反弹策略才手动打开，否则会被假底部信号干扰。
+
+> **两个“B”不是同一件事**（易误认为 bug）：榜单/详情页顶部的「B 超跌反弹池」标签是**追资金流水线**按道氏三段 HH/HL 给出的 A/B 池归属（看“非上升趋势”，与超跌位置无关）；本节的 `B_score` 是**招财进宝反转分**，额外要求 60 日回撤达标。所以完全可能出现「在 B 池、但 B 反转分 0 分、而 A 买入分 52.4」这种共存。
+>
+> 前置未达时，B1~B7 的**结构判定照实算**，只是不计分：子项标记为 `⊘ 不计分`（而非 `✗ 没成立`），后端额外返回 `reversal.gate_note`（含实际回撤 % 与门槛 %）供页面黄底提示直接念出数值。字段语义：`met`=计分命中，`hit`=结构本身命中，`blocked`=`hit && !met`（整组前置未达或该组开关已关）。
+
+| 项 | 满分 | 判定要点（阈值全在 `reversal_params`，页面可改） |
+|----|------|------------------------------------------------|
+| B1 超跌乖离 | 18 | 收盘对 MA`bp_ma_bias_ref`(20) 的负乖离三档：≤`bp_bias_light`(-5)/`bp_bias_mid`(-8)/`bp_bias_severe`(-12)% → 6/12/18 分 |
+| B2 下跌动能衰竭 | 18 | b2_1（8）近 `bp_slope_window`(10) 根**收盘价**斜率较前段放缓 ≥30%（转平/上拐亦算）；b2_2（10）近 `bp_flat_bars`(2) 根不破前 `bp_low_window`(20) 根阶段低点 |
+| B3 MACD 底背离 | 16 | `bp_div_lookback`(60) 根窗口内两个带 ±`bp_div_swing_window`(3) 根确认的阶段低点：价创新低而 DIF 抬高（单根假背离不计） |
+| B4 低位放量异动 | 16 | 前置「近 `bp_shrink_days`(5) 根均量 < MAV20×`bp_shrink_vol_ratio`(0.7) 且阴跌 ≥`bp_shrink_bear_min`(3) 根」；b4_1（7）量 ≥MAV20×1.2 且不再创新低；b4_2（9）量 ≥MAV20×`bp_vol_break_ratio`(1.5)、收阳、站上近 `bp_break_lookback`(5) 根高点 |
+| B5 底部看涨 K 线 | 14（互斥） | 前置阶段低位（现价距 60 日低 ≤`bp_low_zone_pct`(15)%）；底分型/锤子/看涨吞没/启明星命中 1 个计 6，≥2 个形态或启明星组合计 14 |
+| B6 布林下轨支撑 | 9 | MA`bp_boll_period`(20) ±`bp_boll_k`(2)σ；近 `bp_boll_touch_bars`(3) 根最低触及下轨 ±`bp_boll_tolerance_pct`(1)%、当日不再创新低、收盘站回轨上 |
+| B7 筹码低位集中 | 9 | **只认真实筹码接口**：获利比例 ≤`bp_chip_profit_max`(20)% 且 90% 成本上沿距现价 ≤`bp_chip_pressure_max`(12)%；拿不到筹码就记 0 并标注来源 |
+
+> B7 绝不用日线近似估算筹码。`chip.source` 只有三种：`real_api`（已拉到真实数据）/ `failed`（接口失败，本项 0 分）/ `none`（本轮未请求），榜单行内用 💰真 / 💰0 / 💰— 角标区分。
+
+### 两级打分：粗筛 → 精选筹码
+
+一次「开始打分」内部自动衔接两个阶段（`enable_chip=true` 且 B 组已开启时）：
+
+1. **阶段 1 粗筛**（≤`chip.batch_max_pre_filter`，默认 100 只）：一发 Python 批量 `--action score --symbols ... --no-chip --now ISO`，**不请求筹码**，B7 恒 0 并标注「粗筛未拉取筹码，该项不计分」；结果按 `S_B` 降序（B 关闭时退化为按 A 分），逐行落 `fortune_evaluations`，`run_stage='pre_filter'`。
+2. **阶段 2 精选筹码**（≤`chip.select_max_chip`，默认 10 只）：取粗筛 `S_B` 靠前那几只，Node 侧 `for` **串行**（并发恒为 1）逐只 `--action analyze --symbol CODE --with-chip`，每只之间间隔 `chip_request_interval`（默认 1000ms）另加 0~300ms 抖动，单只超时 `chip_timeout`（默认 60s）。成功就用真实筹码重折并覆盖同日同票记录（`run_stage='select'`）；失败/超时只把该行 B7 记 0 并标注「筹码接口获取失败，该项不计分」，**整批不中断**，其余指标与快照照常保存。
+3. **手动补跑**：榜单按钮「精选补筹码」（按当前排序取靠前、且 B7 还未拿到真实筹码的 ≤`select_max_chip` 只）或 `POST /api/fortune/scan/select { symbols }`；单票走详情页「重算（含真实筹码）」（`GET /score/:symbol?with_chip=1`，axios 超时放宽到 180s）。
+4. **历史时间点**（选过去某天）一律 `--no-chip`：东财 `stock_cyq_em` 只有最新数据，与 `--as-of` 口径不匹配，页面标注原因并保持 `run_stage='history'`。
+5. **流量与安全**：同一时刻只允许一个扫描任务（否则直接中文报错），进度存在内存里、10 分钟 TTL，前端轮询 `GET /scan/:scanId` 取 `chip_done/chip_total/chip_skipped`；粗筛完成后必须整榜重读 `GET /leaderboard?date=`（不能只拿子集，否则榜单会缺行）。
+
+### 快照与复盘（两份口径独立留存）
+
+- 打分结果写 `fortune_evaluations`，`criteria_snapshot` 里同时存 `reversal_summary`（B 总分/分档/逐组得分/开关与阈值快照）、`composite`（S_A/S_B/wA/wB）、`run_stage`、chip 元信息。
+- **精选覆盖时不丢粗筛**：`keepHistory` 会把旧的粗筛 snapshot + criterion_scores 压进 `criteria_snapshot.pre_filter_history`（保留最近 3 份），详情页提供「粗筛 vs 精选」对比切换（B 总分、每组得分差值、筹码来源）。**无表结构变更**，全部 JSON 字段。
+- `bp_*` 阈值只在 Node 侧生效（不下发 Python），随每次打分重新读取；改过阈值后旧存档仍带着当时的阈值快照，可复盘口径差异。
+
+### 配置真源（“改文件”与“改页面”都能生效）
+
+**唯一文件**：`backend/config/fortune_criteria.json`（当前 `version` 4.0.0：新增 B1~B7 `reversal_auto` 组、`reversal_params`/`reversal_scoring`/`reversal_bands`，`open_value` 重写为 S_A/S_B 双综合分参数内嵌 `chip`；`notice`/`formula` 同步三基础分 + 双综合分 + 两级打分口径）。闭环链路：
+
+```
+config/fortune_criteria.json
+   →（启动播种 seedCriteria / 页面「恢复出厂」）→ fortune_criteria 表（type: auto / sell_auto / reversal_auto）
+   →（页面改开关与子项分值）PUT /criteria ；（页面改阈值/区间/综合分/筹码限流）PUT /sell-config
+   → getEffectiveSellConfig 合并 SystemConfig(fortune_sell_config) 覆盖值
+   → fp_*/wp_* 阈值随临时 JSON 下发 Python；bp_* 只在 Node 侧 autoScoreReversal 用
+```
+
+- `reversal_auto`（B）与 `sell_auto`（W）一样 `weight` 恒 0，不参与买入加权；`loadAllCriteria`/`loadActiveCriteria` 会把两类排除在 A 之外，B 组由 `loadReversalCriteria()` 单独取。
+- `exclusive`（B5 组内互斥）与 `scoring_model` 是静态结构**不落库**，每次从文件补齐；`fortune_criteria.type` 的 ENUM 由 `app.js` 启动检测 `ALTER TABLE ... MODIFY COLUMN`（Sequelize `sync()` 不会改已存在表的 ENUM）。
+- **页面改**：配置页「超跌反转打分（B）与筹码」区改 B1~B7 开关与分值、`bp_*` 阈值、`enable_chip` 等四项限流、反转分四级区间；「综合分与筹码限流」区改 `enabled`/`wA`/`wB`。保存即下次打分生效，无需重启。
+- **改文件**：编辑 JSON 后需**重启后端**才会重新播种（服务内有内存缓存）；只想清页面阈值覆盖用「清除覆盖」（`POST /sell-config/reset`），回到文件默认；单项↺只回该键。
+- **前端折算与后端同源**：`frontend/src/pages/Fortune/helpers.js` 的 `deriveScore`/`computeTotal`/`resolveBand` 与后端同口径，仅用于配置页实时预览，保存仍以服务端计算为准。
+
+### 代码位置
+
+| 层 | 文件 |
+|----|------|
+| 打分真源 | `backend/config/fortune_criteria.json` |
+| 服务层 | `backend/src/services/fortuneService.js`（`seedCriteria`/`loadReversalCriteria`/`getCriteriaDoc`/`getEffectiveSellConfig`/`saveSellConfig`、`autoScoreDow`+`autoScoreGranville`（M1/M2）、`foldSellModules`（W）、`autoScoreReversal`（B1~B7）、`computeComposite`（S_A/S_B，已替旧 `computeOpenValue`）、`scoreRow`、`saveEvaluation`（`keepHistory`）、`startScan`→`runScanJob`→`runChipSelect`/`runSelectJob`、`getScanStatus`、`scoreSingle`（`withChip`）） |
+| 行情与事实 | `backend/scripts/fetch_money_chase.py`（`--action score\|analyze\|snapshot`，`fp_compute`/`fp_sell_compute` 下发时输出 `fortune_modules`/`sell_modules` 事实，`--with-chip` 才请求 `ak.stock_cyq_em`）—— **本次 B 反转判定全在 Node 侧，Python 一行未改** |
+| 路由 | `backend/src/routes/fortune.js` → 挂载为 `/api/fortune`（业务失败统一 HTTP 200 + `{ok:false, error}`） |
+| 模型 | `backend/src/models/Fortune{Criterion,Evaluation,Stock}.js`（表 `fortune_criteria` / `fortune_evaluations` / `fortune_stocks`） |
+| 临时文件 | `os.tmpdir()/tradelog-fortune`（**不能放 `backend/data/`**，原因同追资金章节那条 nodemon 重启坑） |
+| 前端 | `frontend/src/pages/Fortune/`：index.jsx（股票池 + 三池切换（趋势/反转/混合观察）+ S_A/S_B/A/B/W 五种排序 + 五分徽标 + run_stage/💰 来源角标）、StockDetail.jsx（A/B/W/S_A/S_B 五张分数卡 + B 反转明细卡（逐子项理论来源/命中/得分/依据/指标数值）+ 粗筛 vs 精选对比 + 含真实筹码重算）、CriteriaConfig.jsx（买入/衰竭/反转+筹码三块配置）、ReviewChart.jsx、helpers.js |
+
+---
+
 ## 筹码分布（开发中）
 
 - **页面路径**：`/chip-distribution`
@@ -785,6 +890,7 @@ python3 scripts/fetch_money_chase.py --action analyze --symbol 002913 --sector �
 - [x] 交易日历初始化（2026 全年 243 个交易日）
 - [x] 实时行情接入（新浪财经 API）
 - [x] 每日追资金初版（板块资金流 + A/B 池打分 + 红线 + 规则可调 + 定时节点）
+- [x] 胡胖胖招财进宝 v4.0（A 买入分 + B 超跌反转分 + W 衰竭分三基础分，S_A/S_B 两套综合分排序，粗筛→精选两级打分与真实筹码 B7）
 - [x] 定格快照机制（`money_chase_snapshots` + 脚本 `--action snapshot`）：录入即固化基准快照，分析页📌快照评估（只读）/🔄当前最新评估（动态）分块展示，历史按时间点切片已实跑验证（当日盘中 / 历史盘中 5 分钟还原 / 历史收盘 / 非交易日报错 / 超分时长报错不降级）
 - [ ] 筹码分布功能开发
 - [ ] 用户认证系统（JWT）

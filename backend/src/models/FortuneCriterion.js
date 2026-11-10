@@ -20,9 +20,9 @@ const FortuneCriterion = sequelize.define('FortuneCriterion', {
   },
   name: { type: DataTypes.STRING(80), allowNull: false, comment: '判定项名称（页面展示）' },
   type: {
-    type: DataTypes.ENUM('manual', 'auto', 'semi'),
+    type: DataTypes.ENUM('manual', 'auto', 'semi', 'sell_auto', 'reversal_auto'),
     defaultValue: 'manual',
-    comment: 'manual=纯主观录入；auto=可自动判定（当前仍人工）；semi=机器预警+人工确认',
+    comment: 'manual=纯主观录入；auto=可自动判定（当前仍人工）；semi=机器预警+人工确认；sell_auto=衰竭止盈 W 组（机器判定，不参与买入加权）；reversal_auto=超跌反转 B 组（机器判定，独立成分，不参与买入/衰竭加权）',
   },
   weight: {
     type: DataTypes.DECIMAL(6, 2),

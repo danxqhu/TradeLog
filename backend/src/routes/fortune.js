@@ -44,6 +44,47 @@ router.post('/criteria/reset', async (req, res) => {
   }
 });
 
+// ==================== 衰竭止盈（W）/ 超跌反转（B）配置：阈值/归一模式/综合分参数/等级分档/筹码限流 ====================
+
+// PUT /api/fortune/sell-config  { sellParams?, sellScoring?, openValue?, sellBands?, reversalParams?, reversalScoring?, reversalBands?, chip? } —— 写 SystemConfig 覆盖
+router.put('/sell-config', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const patch = {};
+    for (const k of ['sellParams', 'sellScoring', 'openValue', 'reversalParams', 'reversalScoring', 'chip']) {
+      if (body[k] !== undefined) {
+        if (body[k] === null || typeof body[k] !== 'object' || Array.isArray(body[k])) {
+          return res.json({ ok: false, error: `${k} 需为对象` });
+        }
+        patch[k] = body[k];
+      }
+    }
+    for (const k of ['sellBands', 'reversalBands']) {
+      if (body[k] !== undefined) {
+        if (!Array.isArray(body[k]) || !body[k].length) {
+          return res.json({ ok: false, error: `${k} 需为非空数组` });
+        }
+        patch[k] = body[k];
+      }
+    }
+    if (!Object.keys(patch).length) return res.json({ ok: false, error: '没有需要保存的配置项' });
+    const data = await fortune.saveSellConfig(patch);
+    res.json({ ok: true, data, doc: await fortune.getCriteriaDoc() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/fortune/sell-config/reset —— 清除覆盖（含反转阈值/筹码参数），回到 fortune_criteria.json 默认
+router.post('/sell-config/reset', async (req, res) => {
+  try {
+    const data = await fortune.resetSellConfig();
+    res.json({ ok: true, data, doc: await fortune.getCriteriaDoc() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ==================== 评分预览（不落库，页面实时算总分/分档用） ====================
 
 // POST /api/fortune/preview  { criterion_scores:{code:{score|checked}} }
@@ -106,6 +147,16 @@ router.delete('/evaluations/:id', async (req, res) => {
   }
 });
 
+// GET /api/fortune/evaluation-dates?start=&end= —— 有评分记录的日期清单（日历圆点：只数随增删实时变）
+router.get('/evaluation-dates', async (req, res) => {
+  try {
+    const data = await fortune.listEvaluationDates({ start: req.query.start, end: req.query.end });
+    res.json({ ok: true, data });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ==================== 股票池 ====================
 
 // GET /api/fortune/stocks
@@ -128,6 +179,27 @@ router.post('/stocks', async (req, res) => {
   }
 });
 
+// POST /api/fortune/stocks/clear —— 清空股票池（新的一天重来，不影响已存评估）
+router.post('/stocks/clear', async (req, res) => {
+  try {
+    const r = await fortune.clearStocks();
+    res.json({ ok: true, data: r });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/fortune/stocks/batch  { items: [{symbol,name?,sector?}] } —— 批量加入股票池
+router.post('/stocks/batch', async (req, res) => {
+  try {
+    const r = await fortune.addStocks(req.body.items);
+    if (!r.ok) return fail(res, r);
+    res.json({ ok: true, data: r.data });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // DELETE /api/fortune/stocks/:symbol
 router.delete('/stocks/:symbol', async (req, res) => {
   try {
@@ -141,12 +213,27 @@ router.delete('/stocks/:symbol', async (req, res) => {
 
 // ==================== 批量自动打分 ====================
 
-// POST /api/fortune/scan  { symbols:[code|{symbol,name}], date? } —— 立即返回 scanId，后台跑
+/**
+ * POST /api/fortune/scan  { symbols:[code|{symbol,name}], date?, select? }
+ *  默认走两级：粗筛（≤chip.batch_max_pre_filter，不请求筹码）→ 精选筹码轮（≤chip.select_max_chip，串行 --with-chip）
+ *  select=true 时只跑精选轮（榜单勾选/详情页「补筹码重算」）；上限校验交给服务层按生效配置判定
+ */
 router.post('/scan', async (req, res) => {
   try {
-    const r = await fortune.startScan({ symbols: req.body.symbols, date: req.body.date });
+    const r = await fortune.startScan({ symbols: req.body.symbols, date: req.body.date, select: !!req.body.select });
     if (!r.ok) return fail(res, r);
-    res.json({ ok: true, data: { scanId: r.scanId, total: r.total } });
+    res.json({ ok: true, data: { scanId: r.scanId, total: r.total, stage: r.stage, kind: r.stage } });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/fortune/scan/select  { symbols, date? } —— 单独发起精选筹码轮（B7 用真实接口补分）
+router.post('/scan/select', async (req, res) => {
+  try {
+    const r = await fortune.startScan({ symbols: req.body.symbols, date: req.body.date, select: true });
+    if (!r.ok) return fail(res, r);
+    res.json({ ok: true, data: { scanId: r.scanId, total: r.total, stage: r.stage, kind: 'select' } });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -173,10 +260,13 @@ router.get('/leaderboard', async (req, res) => {
   }
 });
 
-// GET /api/fortune/score/:symbol?date= —— 单票按需重算（会拉行情，可能耗时；页面优先读落库评估）
+// GET /api/fortune/score/:symbol?date=&with_chip=1 —— 单票按需重算（会拉行情，可能耗时；页面优先读落库评估）
+//  with_chip=1/true：额外请求真实筹码接口补 B7（历史时间点后端会强制忽略）
 router.get('/score/:symbol', async (req, res) => {
   try {
-    const r = await fortune.scoreSingle({ symbol: req.params.symbol, date: req.query.date });
+    const q = String(req.query.with_chip || '').toLowerCase();
+    const withChip = q === '1' || q === 'true' || q === 'yes';
+    const r = await fortune.scoreSingle({ symbol: req.params.symbol, date: req.query.date, withChip });
     if (!r.ok) return fail(res, r);
     res.json({ ok: true, data: r.data });
   } catch (e) {

@@ -190,19 +190,33 @@ export const fortuneApi = {
   getCriteria: () => api.get('/fortune/criteria'),
   updateCriteria: (items) => api.put('/fortune/criteria', { items }),
   resetCriteria: (code) => api.post('/fortune/criteria/reset', code ? { code } : {}),
+  // 衰竭止盈（W）/ 超跌反转（B）配置：阈值/归一模式/综合分参数/等级分档/筹码限流，覆盖值存 SystemConfig
+  updateSellConfig: (patch) => api.put('/fortune/sell-config', patch),
+  resetSellConfig: () => api.post('/fortune/sell-config/reset', {}),
   preview: (criterionScores) => api.post('/fortune/preview', { criterion_scores: criterionScores }),
   evaluate: (data) => api.post('/fortune/evaluate', data),
   listEvaluations: (params) => api.get('/fortune/evaluations', { params }),
   getEvaluation: (id) => api.get(`/fortune/evaluations/${id}`),
   deleteEvaluation: (id) => api.delete(`/fortune/evaluations/${id}`),
+  // 有评分记录的日期清单（迷你日历圆点）：[{date:'YYYY-MM-DD', count}]
+  getEvaluationDates: (params) => api.get('/fortune/evaluation-dates', { params }),
   getStocks: () => api.get('/fortune/stocks'),
   addStock: (data) => api.post('/fortune/stocks', data),
   removeStock: (symbol) => api.delete(`/fortune/stocks/${symbol}`),
-  // 批量自动打分：提交→轮询进度；榜单秒开读落库；单票按需重算
-  startScan: (symbols, date) => api.post('/fortune/scan', { symbols, date }),
+  clearStocks: () => api.post('/fortune/stocks/clear'),
+  // 批量加入（带板块）：items=[{symbol,name,sector}]；后端逐条补全名称，返回加入清单
+  addStocks: (items) => api.post('/fortune/stocks/batch', { items }, { timeout: 60000 }),
+  // 批量自动打分：提交→轮询进度；粗筛（≤batch_max_pre_filter）后自动衔接精选筹码轮（≤select_max_chip）
+  startScan: (symbols, date, select) => api.post('/fortune/scan', { symbols, date, select: !!select }),
+  // 精选筹码轮：只对勾选的少数标的请求真实筹码接口补 B7（串行、间隔按配置限流）
+  startSelectScan: (symbols, date) => api.post('/fortune/scan/select', { symbols, date }, { timeout: 30000 }),
   getScanStatus: (scanId) => api.get(`/fortune/scan/${scanId}`),
   getLeaderboard: (date) => api.get('/fortune/leaderboard', { params: { date } }),
-  getStockScore: (symbol, date) => api.get(`/fortune/score/${symbol}`, { params: date ? { date } : {} }),
+  // 单票现算会拉行情（analyze / snapshot），withChip=1 时多一次筹码接口调用，超时放宽
+  getStockScore: (symbol, date, withChip) => api.get(`/fortune/score/${symbol}`, {
+    params: { ...(date ? { date } : {}), ...(withChip ? { with_chip: 1 } : {}) },
+    timeout: withChip ? 180000 : 90000,
+  }),
 }
 
 // ===== 认证相关 =====

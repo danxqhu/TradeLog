@@ -1,16 +1,142 @@
 {
-  "version": "0.2.0",
+  "version": "4.2.0",
   "title": "胡胖胖招财进宝 · 判定项与阈值总表",
-  "notice": "本文件是「胡胖胖招财进宝」判定项、权重、分档、子项的唯一来源（single source of truth）。后端启动时播种进 fortune_criteria 表：页面上人工改过的行 is_custom=true 不被文件覆盖。v0.2 起主页面改为「批量自动打分」：股票是你主观选好的清单，页面不再设主观判定大块（weight=0、禁用），只对道氏、葛兰碧两套理论基于 K 线指标自动折算得分并按加权总分排序。",
-  "formula": "总分 = Σ( 各判定项得分[0-100] × 该项权重% )。当前启用道氏 50% + 葛兰碧 50%。例：道氏 80×50% + 葛兰碧 60×50% = 70 分。",
-  "reference_ma": 20,
-  "bands": [
-    { "code": "drop",    "label": "放弃",  "min": 0,  "max": 60,  "color": "#9e9e9e", "advice": "分数不足，暂不入选" },
-    { "code": "watch",   "label": "观察",  "min": 60, "max": 70,  "color": "#e6b422", "advice": "有条件跟踪，等待更好点位" },
-    { "code": "advise",  "label": "建议",  "min": 70, "max": 80,  "color": "#C4737A", "advice": "可小仓位试探，严格设止损" },
-    { "code": "buy",     "label": "买入",  "min": 80, "max": 90,  "color": "#8B3A42", "advice": "符合条件，按计划建仓" },
-    { "code": "buymore", "label": "买买买", "min": 90, "max": 100.0001, "color": "#c0392b", "advice": "各项高度共振，重点标的" }
+  "notice": "本文件是「胡胖胖招财进宝」判定项、权重、分档、子项、模块阈值的唯一来源（single source of truth）。后端启动时播种进 fortune_criteria 表：页面上人工改过的行 is_custom=true 不被文件覆盖（只跟随更新说明文案），要回到本文件的默认权重/子项需在配置页点「恢复出厂」。v1.0 起打分全部基于「连续 120 根日线序列」精确判定（来自追资金流水线输出的 kline.bars/ma），不再使用双 K 线近似；仅当取不到序列时才降级为近似并在页面标注【数据降级近似判定】。v2.0 起为多模块平权加权体系：M1 道氏 / M2 葛兰碧（判定在后端 JS）+ M3 量价 / M4 均线 / M5 DMI / M6 斐波那契 / M7 箱体 / M8 蜡烛（判定在 Python 流水线的 fortune_modules，阈值全部来自本文件 module_params），模块之间不分主辅。M5~M8 判定逻辑都在 Python 流水线的 fortune_modules。v4.1 起 M5 ADX/DMI 定档开启（enabled=true、权重 8%）计入 A 趋势买入总分：作为 A 池辅助趋势强度项，不盖过道氏/葛兰碧核心条件，高位标的仍由 W 衰竭分做扣分约束；分档从上到下优先级匹配、命中即停止、单选互斥（强多头→中多头→弱多头→震荡→空头兜底），注意 PDI>MDI 时即使 ADX<20 也先落弱多头档再落震荡档。M6 斐波那契、M7 箱体维持默认关闭（仅提示、不计入总分，权重已预置，fp_compute 时照常算事实并在详情页展示），M8 蜡烛线误报率高、默认权重 0 且只作提示不参与总分。v3.0 起新增独立的【衰竭止盈打分模块 W（卖出分）】：criteria 里 type=sell_auto 的 W1～W8 组不参与买入加权（weight 恒 0），由 Python sell_modules 输出事实与命中、后端 foldSellModules 按本文件 sell_params 阈值与库中分值折算衰竭总分 0～100（满分基数=启用子项之和，模式 A 归一 / 模式 B 直接累加），等级用 sell_bands；新开仓综合价值分 = 买入总分×wA − 衰竭分×wB 线性映射 0～100（open_value 可配，只用于买入候选榜单排序，不替代两个原始分数）。阈值页面可改，覆盖值存 SystemConfig(fortune_sell_config)，恢复出厂一并清除。衰竭分是概率性风险提示，不是强制卖出信号，仅作持仓风控辅助。v4.0 起再加独立的【超跌反转买入分 B（B1～B7）】：criteria 里 type=reversal_auto 的 b1～b7 组既不参与买入加权也不参与衰竭加权（weight 恒 0），由后端 autoScoreReversal 按连续 120 根日线序列 + reversal_params 阈值判定（B7 只用真实筹码接口 ak.stock_cyq_em，绝不用日线近似估算），累加封顶 100，等级用 reversal_bands；v4.2 起 B1～B7 默认开启（enabled=true）：每轮打分主动算出反转分，榜单按「道氏 B 类超跌券，或超跌前置成立且至少命中一项反转信号」严格归类——反转池承接超跌反转票，趋势池不再混入；纯下跌中继（超跌但零止跌信号且非道氏 B 类）仍留在趋势池只是 B 分低，可在混合观察池两列对照。历史默认关闭是为了避免假底部信号干扰趋势池，需要时可在配置页整组关掉。同时把单一「新开仓综合价值分」升级为两套独立综合分：S_A = 买入分×wA − 衰竭分×wB（趋势赛道排序用）、S_B = 反转分×wA − 衰竭分×wB（反转赛道排序用），钳位后偏移使输出恒为 0～100（见 open_value.desc），旧的高位争议强制压低与硬拦截分流池一并废除（惩罚已在公式内）。打分流程分两级：粗筛（≤batch_max_pre_filter 只，不请求筹码，B7 记 0 并标注）→ 精选（S_B 靠前 ≤select_max_chip 只，Node 串行逐只拉真实筹码补全 B7，两份快照独立留存可复盘对比）。",
+  "formula": "A 趋势买入总分 = Σ(模块得分[0-100] × 模块权重) ÷ Σ(参与计算的启用模块权重)，封顶 100（不含 type=sell_auto 的 W 组与 type=reversal_auto 的 B 组）。B 超跌反转买入分 = Σ(命中的 b1～b7 子项分值)，封顶 100，与 A 完全独立互不影响；无清晰底部结构（回撤不足 bp_drawdown_min_pct%）整组不计分。W 衰竭止盈分 = Σ(命中子项分值)，模式 A 再按启用且适用的子项满分归一到 0-100 / 模式 B 直接累加封顶 100；W2/W4/W6 无清晰波段结构、W5 非阶段高位时判定不生效不计分；W 由 A、B 两条赛道共用。新开仓综合分两套并行：raw = 基础分×wA − 衰竭分×wB（基础分取 A 得 S_A、取 B 得 S_B），raw 钳位到 [-100×wB, 100×wA]（默认即 [-20,80]）后加 100×wB（默认 +20），保留 1 位小数、输出恒定 0～100；衰竭分越高扣分越多，无需额外压制规则。",
+  "reversal_scoring": {
+    "mode": "accumulate",
+    "desc": "B 反转分 = 命中的子项分值累加，封顶 100；各组内 B1 为三档取一（6/12/18）、B5 为单根/组合取一（6/14），B2/B4 组内两项可叠加。开关关闭的组不计分也不出分（B_score 为「未判定」）。"
+  },
+  "reversal_params": {
+    "bp_drawdown_min_pct": 15,
+    "bp_ma_bias_ref": 20,
+    "bp_bias_light": -5,
+    "bp_bias_mid": -8,
+    "bp_bias_severe": -12,
+    "bp_slope_window": 10,
+    "bp_slope_shrink_ratio": 0.7,
+    "bp_low_window": 20,
+    "bp_flat_bars": 2,
+    "bp_div_lookback": 60,
+    "bp_div_swing_window": 3,
+    "bp_shrink_days": 5,
+    "bp_shrink_vol_ratio": 0.7,
+    "bp_shrink_bear_min": 3,
+    "bp_vol_mild_ratio": 1.2,
+    "bp_vol_break_ratio": 1.5,
+    "bp_break_lookback": 5,
+    "bp_low_zone_pct": 15,
+    "bp_candle_shadow_body_ratio": 2,
+    "bp_candle_upper_body_ratio": 0.3,
+    "bp_candle_body_pos_min": 0.6,
+    "bp_candle_star_body_max": 0.3,
+    "bp_morning_body_min": 0.5,
+    "bp_boll_period": 20,
+    "bp_boll_k": 2,
+    "bp_boll_tolerance_pct": 1,
+    "bp_boll_touch_bars": 3,
+    "bp_chip_profit_max": 20,
+    "bp_chip_pressure_max": 12
+  },
+  "reversal_bands": [
+    { "code": "none", "label": "无底部反转信号", "min": 0, "max": 20, "color": "#2e7d32", "icon": "🟢", "advice": "没有可用底部结构，不进反转池" },
+    { "code": "early", "label": "初步止跌，观察", "min": 20, "max": 40, "color": "#e6b422", "icon": "🟡", "advice": "出现个别止跌信号，等量能与结构进一步确认" },
+    { "code": "ready", "label": "具备反转条件，重点观察", "min": 40, "max": 65, "color": "#e07b39", "icon": "🟠", "advice": "超跌 + 止跌多项共振，可进反转候选池跟踪" },
+    { "code": "signal", "label": "底部反转信号共振", "min": 65, "max": 100.0001, "color": "#8B3A42", "icon": "🔴", "advice": "反转信号共振，反转赛道优先标的（胜率天然低于趋势票，严格止损）" }
   ],
+  "kline_window": 120,
+  "dow_window": 60,
+  "reference_ma": 20,
+  "module_params": {
+    "fp_compute": true,
+    "fp_window_break": 20,
+    "fp_vol_break_ratio": 1.1,
+    "fp_vol_shrink_ratio": 0.7,
+    "fp_pullback_days": 2,
+    "fp_stall_vol_ratio": 1.2,
+    "fp_stall_max_pct": 0.5,
+    "fp_ma_short": 20,
+    "fp_ma_long": 30,
+    "fp_ma_slope_bars": 1,
+    "fp_dmi_period": 14,
+    "fp_adx_strong": 40,
+    "fp_adx_trend": 25,
+    "fp_adx_weak": 20,
+    "fp_fib_lookback": 60,
+    "fp_fib_ratios": [0.236, 0.382, 0.5, 0.618],
+    "fp_fib_tolerance": 2.0,
+    "fp_box_window": 20,
+    "fp_box_min_amp_pct": 4.0,
+    "fp_box_retest_tolerance_pct": 1.0,
+    "fp_candle_shadow_body_ratio": 2,
+    "fp_candle_upper_body_ratio": 0.3,
+    "fp_candle_body_pos_min": 0.6,
+    "fp_candle_trend_lookback": 5
+  },
+  "bands": [
+    { "code": "priority", "label": "优先关注", "min": 80, "max": 100.0001, "color": "#8B3A42", "advice": "趋势好 + 择时舒服，无重大风险，可优先介入" },
+    { "code": "observe",  "label": "观察",     "min": 70, "max": 80,       "color": "#C4737A", "advice": "趋势达标，但买点一般或存在小风险，等待更好点位" },
+    { "code": "neutral",  "label": "观望",     "min": 50, "max": 70,       "color": "#e6b422", "advice": "留在候选池继续观察，暂不优先买入" },
+    { "code": "avoid",    "label": "回避",     "min": 0,  "max": 50,       "color": "#9e9e9e", "advice": "分数不足或风险偏高，不优先买入" }
+  ],
+  "sell_bands": [
+    { "code": "low",    "label": "低衰竭", "min": 0,  "max": 20,       "color": "#2e7d32", "icon": "🟢", "advice": "无明显止盈信号，正常持仓观察" },
+    { "code": "mild",   "label": "轻度衰竭", "min": 20, "max": 40,       "color": "#e6b422", "icon": "🟡", "advice": "出现单个或少量衰竭信号，开始留意，准备分批止盈" },
+    { "code": "mid",    "label": "中度衰竭", "min": 40, "max": 65,       "color": "#e07b39", "icon": "🟠", "advice": "多个信号叠加，建议优先减仓" },
+    { "code": "severe", "label": "重度衰竭", "min": 65, "max": 100.0001, "color": "#b3261e", "icon": "🔴", "advice": "多重风险信号共振，建议考虑清仓离场" }
+  ],
+  "sell_params": {
+    "wp_ma_ref": 20,
+    "wp_dev_light": 5,
+    "wp_dev_mid": 8,
+    "wp_dev_severe": 12,
+    "wp_valid_break_pct": 2,
+    "wp_swing_window": 3,
+    "wp_struct_lookback": 60,
+    "wp_hh_shrink_ratio": 0.5,
+    "wp_hh_shrink_min_pct": 2,
+    "wp_vol_div_ratio": 0.8,
+    "wp_high_zone_pct": 3,
+    "wp_stall_vol_mult": 1.5,
+    "wp_stall_pct_max": 0.5,
+    "wp_turnover_min": 8,
+    "wp_shadow_body_mult": 2,
+    "wp_shadow_drop_pct": 3,
+    "wp_shadow_vol_mult": 1.5,
+    "wp_fib_lookback": 60,
+    "wp_fib_ext_ratios": [1.618, 2.618],
+    "wp_fib_ext_tolerance": 2,
+    "wp_fib_min_amp_pct": 20,
+    "wp_fib_stall_bars": 3,
+    "wp_ext2_fail_min": 2,
+    "wp_box_window": 20,
+    "wp_box_min_amp_pct": 4,
+    "wp_box_touch_min": 3,
+    "wp_fake_break_days": 5,
+    "wp_fake_back_pct": 1,
+    "wp_div_lookback": 60,
+    "wp_gain_period": 60,
+    "wp_gain_range1": [80, 150],
+    "wp_gain_range2": 150
+  },
+  "sell_scoring": {
+    "mode": "A",
+    "desc": "模式 A（推荐）：只拿启用且判定适用的子项，按其分值占比归一，输出仍落在 0-100；模式 B：直接累加封顶 100"
+  },
+  "open_value": {
+    "enabled": true,
+    "wA": 0.8,
+    "wB": 0.2,
+    "desc": "两套新开仓综合分共用同一惩罚公式：raw = 基础分×wA − 衰竭分×wB（基础分取 A 买入分→S_A，取 B 反转分→S_B）；raw 钳位到 [-100×wB, 100×wA]（默认 [-20,80]）后加 100×wB（默认 +20），保留 1 位小数、输出恒定 0～100。wA+wB 保持等于 1 才是标准 0～100 区间。S_A 用于趋势候选池降序，S_B 用于反转候选池降序，混合观察池两者同显。",
+    "chip": {
+      "enable_chip": true,
+      "batch_max_pre_filter": 100,
+      "select_max_chip": 10,
+      "chip_request_interval": 1000,
+      "chip_timeout": 60000,
+      "desc": "两级打分流量控制：粗筛最多 batch_max_pre_filter 只、一律 --no-chip（B7 不计分，标注「粗筛未拉取筹码」）；精选取 S_B 靠前 select_max_chip 只，Node 串行（并发恒为 1）逐只 --with_chip 拉真实筹码 ak.stock_cyq_em，每只之间间隔 chip_request_interval 毫秒（另加 0～300ms 抖动），单次超时 chip_timeout 毫秒即降级。接口超时/报错/空返回时 B7 记 0 并标注「筹码接口获取失败，该项不计分」，整票其余指标照常计算、快照照常保存。历史时间点不请求实时筹码（口径不匹配）。enable_chip=false 时 B7 永久跳过。"
+    }
+  },
   "criteria": [
     {
       "code": "manual",
@@ -32,35 +158,345 @@
       "code": "dow",
       "name": "道氏理论",
       "type": "auto",
-      "weight": 50,
+      "weight": 30,
       "enabled": true,
       "auto": true,
-      "desc": "趋势方向判定（不给买点，只判环境）。自动口径基于追资金已算好的道氏高低点、20/60 日高低、均线、量能折算。得分 = 满足的子项分值之和 / 全部正向分值 × 100。",
+      "desc": "识别中长期多头趋势底子，不做短期追高/乖离/背离风控（交给葛兰碧）。基于连续 60 根日线序列扫描高低点结构，得分 = 满足的子项分值之和（满分 100）。",
       "items": [
-        { "id": "d1", "label": "上升趋势成立（高点抬升 HH + 低点抬升 HL）", "points": 40, "auto_key": "dow_up", "desc": "道氏分段判定 = UP（近 20 日切 3 段，高低点依次抬升）" },
-        { "id": "d2", "label": "回调不破前低（次级回调健康）", "points": 20, "auto_key": "no_new_low", "desc": "当日未创 20 日新低、且未跌破近 10 日低点容忍带" },
-        { "id": "d3", "label": "突破关键水平有量能配合", "points": 20, "auto_key": "breakout_volume", "desc": "若逼近/站上 20 日高则需折算量 ≥1.1×；未创新高不扣分" },
-        { "id": "d4", "label": "大周期背景向上（价站上年线级别均线）", "points": 20, "auto_key": "above_long_ma", "desc": "现价高于中长期均线（MA30），短长结构不矛盾" }
+        { "id": "d1", "label": "上升趋势成立（HH+HL 高低点依次抬升）", "points": 40, "auto_key": "dow_up", "desc": "取近 60 根分前/中/后三段各 20 根：后段最高>中段最高>前段最高 且 后段最低>中段最低>前段最低（降级时按道氏分段判定=UP）" },
+        { "id": "d2", "label": "回调不破有效前低", "points": 20, "auto_key": "no_new_low", "desc": "近 20 根最后一波回调的有效低点未被击穿（降级：当日未创 20 日新低且现价>近 10 日低×0.97）" },
+        { "id": "d3", "label": "突破阶段高点有量配合", "points": 20, "auto_key": "breakout_volume", "desc": "价格逼近/突破近 60 根阶段高点时，当日量≥近 20 日均量×1.1；未处于突破位则不扣分" },
+        { "id": "d4", "label": "大周期背景向上（价>MA30 且 MA30 向上）", "points": 20, "auto_key": "above_long_ma_rising", "desc": "收盘价 > MA30 且 MA30 斜率向上（今日 MA30 > 昨日 MA30），两条件同时满足才给分" }
       ]
     },
     {
       "code": "granville",
       "name": "葛兰碧八大法则（均线）",
       "type": "auto",
-      "weight": 50,
+      "weight": 30,
       "enabled": true,
       "auto": true,
       "reference_ma": 20,
-      "desc": "唯一直接给「现在能不能买」的经典买点理论。语义：veto=必要条件不满足直接否决该项、bonus=加分、risk=警示扣分、buy_point=核心买点。得分 = (满足的加分/买点分值 − 触发的风险扣分) / 正向满分 × 100；veto 触发则本项记 0。",
+      "scoring_model": "positive_minus_deduction",
+      "positive_cap": 100,
+      "floor": 0,
+      "desc": "择时买点 + 短期风险拦截。八大法则是不同行情阶段的信号，不要求同时全部命中。算法：先算 B1~B4 正向买点（各 25、累加封顶 100），再依次扣 S1~S4 + 乖离 + 背离风险项，最终下限 0、不出现负分。全部基于连续 120 根日线序列精确判定。",
       "items": [
-        { "id": "G1", "label": "均线上穿、价格站上 MA20（趋势转多）", "points": 12, "semantic": "bonus", "auto_key": "g1_above_rising", "formula": "close > MA20 且 MA20 向上" },
-        { "id": "G2", "label": "回踩均线不破随即回升（核心买点）", "points": 20, "semantic": "buy_point", "auto_key": "g2_pullback_hold", "formula": "MA20 ≤ close ≤ MA20×1.03 且当日收阳" },
-        { "id": "G3", "label": "回踩后放量突破前高（强化买点）", "points": 20, "semantic": "buy_point", "auto_key": "g3_breakout_vol", "formula": "站上 MA20 且 MA20 向上 + 近 20 日高 + 折算量 ≥1.3×" },
-        { "id": "G4", "label": "急跌远离均线后回归", "points": 12, "semantic": "bonus", "auto_key": "g4_recovery", "formula": "close 刚收复 MA20（0~3% 内）且当日收阳" },
-        { "id": "G5", "label": "均线走平、价格缠绕（无趋势）", "points": -10, "semantic": "risk", "auto_key": "g5_flat", "formula": "MA20 斜率≈0（|MA20−昨MA20|/MA20 < 0.3%）" },
-        { "id": "G6", "label": "跌破均线且均线拐头向下（买点失效）", "points": 0, "semantic": "veto", "auto_key": "g6_veto", "formula": "close < MA20 且 MA20 走平转降" },
-        { "id": "G7", "label": "乖离过大（追高警示）", "points": -10, "semantic": "risk", "auto_key": "g7_overextend", "formula": "close/MA20 − 1 > 8%" },
-        { "id": "G8", "label": "量价背离（价新高量未跟上）", "points": -10, "semantic": "risk", "auto_key": "g8_diverge", "formula": "创/近 20 日新高但折算量 < 1.0×均量" }
+        { "id": "B1", "type": "buy_point", "points": 25, "label": "底部拐点启动买点", "auto_key": "b1_bottom_turn", "desc": "MA20 前期持续下降≥10 根 → 走平/拐头 → 当日阳线放量站上 MA20" },
+        { "id": "B2", "type": "buy_point", "points": 25, "label": "趋势中途回踩支撑买点", "auto_key": "b2_pullback_hold", "desc": "MA20 上行（近 10 根）+ 近 5 根低点靠近 MA20 不有效跌破（≥MA20×0.97）+ 当日收阳回升" },
+        { "id": "B3", "type": "buy_point", "points": 25, "label": "远离均线后良性回调加仓点", "auto_key": "b3_recover_hold", "desc": "近 20 根曾远离 MA20（乖离>6%）+ 回调守住 MA20（低点≥MA20×0.97）+ 当日收阳向上" },
+        { "id": "B4", "type": "buy_point", "points": 25, "label": "假跌破洗盘买点", "auto_key": "b4_fake_break", "desc": "MA20 向上 + 昨日下穿 MA20（缩量）+ 今日收回均线上方（放量）" },
+        { "id": "S1", "type": "risk", "points": -30, "label": "均线拐头破位否决", "auto_key": "s1_ma_turn_down", "desc": "MA20 由升转平再拐头向下 + 价格有效跌破 MA20（强风险）" },
+        { "id": "S2", "type": "risk", "points": -20, "label": "反弹承压回落", "auto_key": "s2_bounce_reject", "desc": "MA20 向下 + 价格在均线下方反弹触及 MA20 却受阻、再度收阴" },
+        { "id": "S3", "type": "risk", "points": -15, "label": "弱势中继反弹", "auto_key": "s3_weak_bounce", "desc": "MA20 持续下行 + 反弹无力近 5 根高点仍够不到 MA20" },
+        { "id": "S4", "type": "risk", "points": -20, "label": "假突破诱多", "auto_key": "s4_bull_trap", "desc": "MA20 向下 + 昨日短暂站上均线 + 今日又跌回均线下方" },
+        { "id": "EXT", "type": "risk", "points": -15, "label": "乖离过大（追高警示）", "auto_key": "ext_overextend", "desc": "MA20 乖离率 > 8%，短期涨幅过大追高风险" },
+        { "id": "DVG", "type": "risk", "points": -15, "label": "量价背离", "auto_key": "diverge", "desc": "价格创阶段新高但成交量明显未跟上（低于近期均量）" }
+      ]
+    },
+    {
+      "code": "volume_price",
+      "name": "基础量价逻辑（M3）",
+      "type": "auto",
+      "weight": 12,
+      "enabled": true,
+      "auto": true,
+      "scoring_model": "accumulate",
+      "floor": 0,
+      "desc": "独立的量价信号（不与道氏/葛兰碧混在一个模块里）。基于前复权日线 high/close/volume 与 20 日均量 MAV20 判定：正向项加分、风险项扣分，模块得分 = 命中项分值之和（下限 0、封顶 100）。判定在 Python fortune_modules.volume_price 完成，阈值取 module_params。",
+      "items": [
+        { "id": "vp1", "type": "positive", "points": 25, "label": "突破放量", "auto_key": "vp_break_volume", "desc": "收盘上穿近 fp_window_break（默认20）根阶段前高，且当日量 > MAV20 × fp_vol_break_ratio（默认1.1）——突破有量配合，正向" },
+        { "id": "vp2", "type": "positive", "points": 25, "label": "回调缩量", "auto_key": "vp_pullback_shrink", "desc": "连续 fp_pullback_days（默认2）根收盘回落，且当日量 < MAV20 × fp_vol_shrink_ratio（默认0.7）——良性回调，正向" },
+        { "id": "vp3", "type": "risk", "points": -25, "label": "新高无量（量价背离）", "auto_key": "vp_new_high_no_vol", "desc": "high 创窗口新高，但当日量低于前一波高点对应量——上涨无量推进，风险扣分" },
+        { "id": "vp4", "type": "risk", "points": -25, "label": "放量滞涨", "auto_key": "vp_volume_stall", "desc": "量 > MAV20 × fp_stall_vol_ratio（默认1.2）但涨幅不足 fp_stall_max_pct%（默认0.5%）——大量成交不推进，风险扣分" }
+      ]
+    },
+    {
+      "code": "ma",
+      "name": "均线体系（M4）",
+      "type": "auto",
+      "weight": 10,
+      "enabled": true,
+      "auto": true,
+      "scoring_model": "accumulate",
+      "floor": 0,
+      "desc": "独立的均线状态评估（不判风险、只描述现状）：5 条状态各 20 分，全部满足=100。方向判定默认对比前一根均线（fp_ma_slope_bars=1），调大则该值改为取最近 N 根均线最小二乘斜率>0，更稳。额外输出排列标签：多头排列/空头排列/缠绕震荡（仅供趋势标签参考，不重复计分）。",
+      "items": [
+        { "id": "ma20_up", "type": "positive", "points": 20, "label": "MA20 方向向上", "auto_key": "ma20_up", "desc": "MA20 > 前一周期 MA20（或最近 fp_ma_slope_bars 根拟合斜率 > 0）" },
+        { "id": "ma30_up", "type": "positive", "points": 20, "label": "MA30 方向向上", "auto_key": "ma30_up", "desc": "MA30 > 前一周期 MA30（或拟合斜率 > 0）" },
+        { "id": "above_ma20", "type": "positive", "points": 20, "label": "收盘价站上 MA20", "auto_key": "above_ma20", "desc": "close > MA20" },
+        { "id": "above_ma30", "type": "positive", "points": 20, "label": "收盘价站上 MA30", "auto_key": "above_ma30", "desc": "close > MA30" },
+        { "id": "ma_bull", "type": "positive", "points": 20, "label": "均线多头（MA20 在 MA30 上方）", "auto_key": "ma_bull", "desc": "MA20 > MA30；反向则为空头排列（本项 0 分）" }
+      ]
+    },
+    {
+      "code": "dmi",
+      "name": "ADX/DMI 趋势强度（M5）",
+      "type": "auto",
+      "weight": 8,
+      "enabled": true,
+      "auto": true,
+      "scoring_model": "tier",
+      "floor": 0,
+      "desc": "v4.1 定档开启：以权重 8% 计入 A 趋势买入总分，属 A 池辅助趋势强度项，不盖过道氏/均线核心条件，高位标的仍由 W 衰竭分扣分约束。分档按下方从上到下优先级匹配，命中即停止、单选互斥。周期 fp_dmi_period（默认14）、强度阀值 fp_adx_strong/fp_adx_trend/fp_adx_weak 全部可配。注意：ADX 高但 MDI>PDI 是空头强趋势，不是买点。",
+      "items": [
+        { "id": "t_strong_bull", "type": "tier", "points": 100, "label": "强多头趋势（ADX>40 且 PDI>MDI）", "desc": "优先级①：ADX > fp_adx_strong（默认40）同时 PDI > MDI" },
+        { "id": "t_mid_bull", "type": "tier", "points": 70, "label": "多头趋势成型（25<ADX≤40 且 PDI>MDI）", "desc": "优先级②：fp_adx_trend（默认25）< ADX ≤ fp_adx_strong 且 PDI > MDI" },
+        { "id": "t_weak_bull", "type": "tier", "points": 40, "label": "弱多头（PDI>MDI 但 ADX≤25）", "desc": "优先级③：多头占优但强度不足；只要 PDI>MDI，即使 ADX<fp_adx_weak 也先落本档（多头优先于震荡，不再落震荡档）" },
+        { "id": "t_choppy", "type": "tier", "points": 20, "label": "震荡行情（ADX<20 且非多头占优）", "desc": "优先级④：ADX < fp_adx_weak（默认20）且 PDI 未大于 MDI，趋势弱，不适合趋势策略（备注提醒）" },
+        { "id": "t_bear", "type": "tier", "points": 0, "label": "空头占优（MDI≥PDI）", "desc": "优先级⑤（兜底）：前四档均未命中时一律空头占优 0 分（强 ADX + 空头只说明杀跌有强度）" }
+      ]
+    },
+    {
+      "code": "fib",
+      "name": "斐波那契回撤支撑压力（M6）",
+      "type": "auto",
+      "weight": 5,
+      "enabled": false,
+      "auto": true,
+      "scoring_model": "tier",
+      "floor": 0,
+      "desc": "波段识别为简易版：取 fp_fib_lookback（默认60）根窗口内全局高低点定一个完整波段（高点在后→上涨波段回踩支撑；低点在后→下跌波段反弹压力），按 fp_fib_ratios 算各回撤/反弹价位，取距现价最近一档。不同波段选法结果差异很大，本页仅供价位参考，后续可升级为 HH/HL 分段波段。v4.1 维持「仅提示、不计入总分」：先跑一段时间快照观察波段抓取准不准，再决定是否计入。",
+      "items": [
+        { "id": "f_key_hold", "type": "tier", "points": 100, "label": "回踩 0.5/0.618 关键支撑并止跌收阳", "desc": "最近档∈{0.5,0.618} 且偏离≤fp_fib_tolerance%（默认2%）且当日收阳" },
+        { "id": "f382_hold", "type": "tier", "points": 60, "label": "浅回踩 0.382 企稳", "desc": "价格落在 0.382 ±fp_fib_tolerance% 且止跌（强趋势常见浅回调）" },
+        { "id": "f_resist", "type": "tier", "points": 0, "label": "反弹触及斐波那契压力位承压", "desc": "下跌波段反弹触及 0.382/0.5/0.618 压力位但当日收阴——承压回落" },
+        { "id": "f_na", "type": "tier", "points": 30, "label": "不在关键回撤区", "desc": "距离最近斐波那契位超过阀值，本项中性参考分（不奖不罚）" }
+      ]
+    },
+    {
+      "code": "box",
+      "name": "箱体高低区间（M7）",
+      "type": "auto",
+      "weight": 5,
+      "enabled": false,
+      "auto": true,
+      "scoring_model": "tier",
+      "floor": 0,
+      "desc": "取前 fp_box_window（默认20）根 K 线最高为箱体上沿、最低为下沿（均不含当日）；振幅 < fp_box_min_amp_pct%（默认4%）视为无效箱体按震荡计分并备注。突破判定一律用收盘价站上上沿（非盘中刺破）。适合震荡票识别支撑压力，也可作为 B 池（超跌反弹）辅助。默认关闭。",
+      "items": [
+        { "id": "b_break", "type": "tier", "points": 100, "label": "收盘向上突破箱体上沿", "desc": "close > box_top（收盘确认，不是盘中刺破）" },
+        { "id": "b_retest", "type": "tier", "points": 70, "label": "回踩上沿不破（突破回踩支撑）", "desc": "近 fp_box_window 根内曾站上上沿，当前回到 box_top ±fp_box_retest_tolerance_pct% 且未收在下方" },
+        { "id": "b_inside", "type": "tier", "points": 40, "label": "箱体内部震荡", "desc": "价在下沿与上沿之间，中性震荡" },
+        { "id": "b_break_down", "type": "tier", "points": 0, "label": "收盘跌破箱体下沿（破位）", "desc": "close < box_bottom，破位风险" },
+        { "id": "b_narrow", "type": "tier", "points": 40, "label": "箱体振幅不足（无效箱体）", "desc": "amp < fp_box_min_amp_pct%，不构成有效箱体，按震荡中性处理并备注" }
+      ]
+    },
+    {
+      "code": "candle",
+      "name": "基础蜡烛线（M8・可选开关，默认不计分）",
+      "type": "auto",
+      "weight": 0,
+      "enabled": false,
+      "auto": true,
+      "scoring_model": "tier",
+      "floor": 0,
+      "desc": "误报率偏高，因此默认关闭且权重 0：即使打开开关也只作信号提示，不建议给高权重。形态匹配是数学近似，不等于看图标准形态，人工复核优先。看跌吞没只在详情页提示，不扣分。比例阈值全部在 module_params。",
+      "items": [
+        { "id": "c_hammer", "type": "tier", "points": 100, "label": "锤子线（底部看涨）", "desc": "下影 ≥ 实体×fp_candle_shadow_body_ratio（默认2）、上影 ≤ 实体×fp_candle_upper_body_ratio（默认0.3）、实体位于 K 线上端（body_pos ≥ fp_candle_body_pos_min）且近 fp_candle_trend_lookback 根累计下跌（后置下跌过滤）" },
+        { "id": "c_bull_engulf", "type": "tier", "points": 100, "label": "看涨吞没", "desc": "前一根阴线、当前阳线且实体完全包住前一根实体（close > prev_open 且 open < prev_close）" },
+        { "id": "c_bear_engulf", "type": "tier", "points": 0, "label": "看跌吞没（仅提示，不扣分）", "desc": "前一根阳线、当前阴线实体包住前实体——顶部预警，请人工复核" },
+        { "id": "c_none", "type": "tier", "points": 0, "label": "普通 K 线，无形态信号", "desc": "未命中任何标准形态（默认 0 分）" }
+      ]
+    },
+    {
+      "code": "w1",
+      "name": "葛兰碧卖出信号组（W1）",
+      "type": "sell_auto",
+      "weight": 0,
+      "enabled": true,
+      "auto": true,
+      "desc": "衰竭止盈模块（不参与买入加权）。葛兰碧卖出侧四信号：乖离超买/回踩不上/跌破均线拐头/反弹承压。判定在 Python sell_modules，参考线 wp_ma_ref（默认 MA20），组满分 20。",
+      "items": [
+        { "id": "w1_1", "type": "sell", "points": 6, "tiers": [2, 4, 6], "label": "乖离超买（冲高远离均线）", "desc": "按现价对 MA20 乖比分档：≥wp_dev_light% 轻度 2 分，≥wp_dev_mid% 明显 4 分，≥wp_dev_severe% 严重 6 分" },
+        { "id": "w1_2", "type": "sell", "points": 5, "label": "回踩均线无法重新站上", "desc": "前期 MA20 上行，回调触及 MA20 附近后连续数日收盘未能重新站上（收盘 < MA20×(1−wp_valid_break_pct%)），触发即得 5 分" },
+        { "id": "w1_3", "type": "sell", "points": 5, "label": "跌破均线 + 均线拐头走平向下", "desc": "有效跌破 MA20（偏离 > wp_valid_break_pct%）且 MA20 由升转平/拐头向下，触发即得 5 分" },
+        { "id": "w1_4", "type": "sell", "points": 4, "label": "反弹碰均线承压回落", "desc": "MA20 向下，价格在均线下方反弹触及 MA20 却受阻、再度收阴，触发即得 4 分" }
+      ]
+    },
+    {
+      "code": "w2",
+      "name": "道氏趋势结构衰竭/破坏（W2）",
+      "type": "sell_auto",
+      "weight": 0,
+      "enabled": true,
+      "auto": true,
+      "desc": "基于 wp_struct_lookback 根波段高低点（find_swings）：新高抬升幅度收窄 = 动能衰减；有效回调低点被跌破 = 趋势反转确认。无清晰波段结构时整组不生效不计分。组满分 20。",
+      "items": [
+        { "id": "w2_0", "type": "sell", "points": 8, "label": "新高抬升幅度持续收窄（动能衰减）", "desc": "最近两段新高抬升幅度 < 前一段抬升×wp_hh_shrink_ratio（或绝对幅度 < wp_hh_shrink_min_pct%），触发即得 8 分" },
+        { "id": "w2_1", "type": "sell", "points": 12, "label": "有效回调低点被跌破（趋势反转确认）", "desc": "收盘价跌破最近一个有效波段回调低点，触发即得 12 分" }
+      ]
+    },
+    {
+      "code": "w3",
+      "name": "量价衰竭与量价背离（W3）",
+      "type": "sell_auto",
+      "weight": 0,
+      "enabled": true,
+      "auto": true,
+      "desc": "高位区的量能衰竭信号：顶背离/放量滞涨高换手/放量长上影。高位定义：现价距 60 日高 ≤ wp_high_zone_pct%。组满分 20。",
+      "items": [
+        { "id": "w3_1", "type": "sell", "points": 8, "label": "新高但量能低于前高（量价顶背离）", "desc": "今日创 60 日新高但当日量 < 前高当日量×wp_vol_div_ratio，触发即得 8 分" },
+        { "id": "w3_2", "type": "sell", "points": 7, "label": "高位放量滞涨、高换手不创新高", "desc": "高位区且量 ≥ wp_stall_vol_mult×MAV20、涨幅 ≤ wp_stall_pct_max%（换手 ≥ wp_turnover_min% 加强）且未创收盘新高，触发即得 7 分" },
+        { "id": "w3_3", "type": "sell", "points": 5, "label": "高位放量长上影冲高回落", "desc": "盘中创阶段新高后回落，上影 ≥ 实体×wp_shadow_body_mult、距高点回落 ≥ wp_shadow_drop_pct%、量 ≥ wp_shadow_vol_mult×MAV20，触发即得 5 分" }
+      ]
+    },
+    {
+      "code": "w4",
+      "name": "斐波那契扩展压力位（W4）",
+      "type": "sell_auto",
+      "weight": 0,
+      "enabled": true,
+      "auto": true,
+      "desc": "以 wp_fib_lookback 根波段低→高外推 1.618/2.618 扩展位（波段幅 ≥ wp_fib_min_amp_pct% 才生效）：遇阻滞涨/多次冲击失败。无清晰波段结构时整组不生效不计分。组满分 10。",
+      "items": [
+        { "id": "w4_1", "type": "sell", "points": 4, "label": "到达 1.618 扩展位遇阻震荡", "desc": "现价距 1.618 扩展位 ≤ wp_fib_ext_tolerance% 且近 wp_fib_stall_bars 根滞涨，触发即得 4 分" },
+        { "id": "w4_2", "type": "sell", "points": 6, "label": "到达 2.618 扩展位多次冲击失败", "desc": "窗口内盘中触及 2.618 扩展位 ±容差 ≥ wp_ext2_fail_min 次但收盘均未站上，触发即得 6 分" }
+      ]
+    },
+    {
+      "code": "w5",
+      "name": "高位看跌 K 线形态（W5）",
+      "type": "sell_auto",
+      "weight": 0,
+      "enabled": true,
+      "auto": true,
+      "desc": "前置条件：处于阶段高位（现价距 60 日高 ≤ wp_high_zone_pct%）才计分，低位出现一律不计分。黄昏星/看跌吞没/乌云盖顶/射击之星命中任一即得 8 分。",
+      "items": [
+        { "id": "w5_1", "type": "sell", "points": 8, "label": "黄昏星/看跌吞没/乌云盖顶/射击之星", "desc": "高位区命中任一经典看跌形态（复用 fp_candle_* 比例阈值，数学近似、人工复核优先），触发即得 8 分" }
+      ]
+    },
+    {
+      "code": "w6",
+      "name": "箱体突破失败/上沿反复承压（W6）",
+      "type": "sell_auto",
+      "weight": 0,
+      "enabled": true,
+      "auto": true,
+      "desc": "取 wp_box_window 根箱体（振幅 ≥ wp_box_min_amp_pct% 才有效，否则整组不生效）：多次冲击上沿不过/假突破跌回箱体。组满分 8。",
+      "items": [
+        { "id": "w6_1", "type": "sell", "points": 3, "label": "多次冲击箱体上沿不过", "desc": "窗口内盘中触及上沿（≥上沿×0.99）≥ wp_box_touch_min 次但收盘均未站上，触发即得 3 分" },
+        { "id": "w6_2", "type": "sell", "points": 5, "label": "假突破，跌回箱体内部", "desc": "近 wp_fake_break_days 根内曾收盘突破上沿、随后又收盘跌回上沿下方超 wp_fake_back_pct%，触发即得 5 分" }
+      ]
+    },
+    {
+      "code": "w7",
+      "name": "MACD 顶背离（W7）",
+      "type": "sell_auto",
+      "weight": 0,
+      "enabled": true,
+      "auto": true,
+      "desc": "复用追资金 detect_top_divergence（wp_div_lookback 窗口）：价格创新高、DIF 未同步创新高，触发即得 7 分。",
+      "items": [
+        { "id": "w7_1", "type": "sell", "points": 7, "label": "MACD 顶背离（动量背离）", "desc": "两段波段高点价升 DIF 降，触发即得 7 分（detail 带两高点价与 DIF 连线）" }
+      ]
+    },
+    {
+      "code": "w8",
+      "name": "阶段累计涨幅高位风险（W8）",
+      "type": "sell_auto",
+      "weight": 0,
+      "enabled": true,
+      "auto": true,
+      "desc": "统计周期 wp_gain_period（默认 60）日累计涨幅：80%～150% 得 3 分，>150% 得 4 分（两档互斥）。组满分 7。",
+      "items": [
+        { "id": "w8_1", "type": "sell", "points": 3, "label": "阶段涨幅 80%～150%", "desc": "wp_gain_period 日涨幅∈[wp_gain_range1]，触发即得 3 分" },
+        { "id": "w8_2", "type": "sell", "points": 4, "label": "阶段涨幅 >150%", "desc": "wp_gain_period 日涨幅 > wp_gain_range2，触发即得 4 分" }
+      ]
+    },
+    {
+      "code": "b1",
+      "name": "超跌乖离（B1・BIAS 空头深度）",
+      "type": "reversal_auto",
+      "weight": 0,
+      "enabled": true,
+      "auto": true,
+      "scoring_model": "tier",
+      "desc": "反转赛道第一项：股价大幅低于均线才算超跌。后端 autoScoreReversal 基于连续 120 根日线判定收盘价对 bp_ma_bias_ref（默认 MA20）的负乖离，三档取一（不叠加）：负乖离达 bp_bias_light 轻度 6 分、达 bp_bias_mid 明显 12 分、达 bp_bias_severe 深度 18 分。组满分 18。整组前置：现价距 60 日高回撤 ≥ bp_drawdown_min_pct%（默认 15%），否则视为“没有清晰底部结构、只是中途小反弹”，B1～B7 全部不计分。",
+      "items": [
+        { "id": "b1_1", "type": "reversal", "points": 18, "tiers": [6, 12, 18], "theory": "乖离率 BIAS（Williams 超买超卖体系）", "label": "负乖离分档（轻度/明显/深度）", "desc": "BIAS = 收盘/MA20 − 1：≤ bp_bias_light(-5%) 轻度超跌 6 分；≤ bp_bias_mid(-8%) 明显 12 分；≤ bp_bias_severe(-12%) 深度 18 分（三档取最高一档）" }
+      ]
+    },
+    {
+      "code": "b2",
+      "name": "下跌动能衰竭（B2・道氏空头衰竭）",
+      "type": "reversal_auto",
+      "weight": 0,
+      "enabled": true,
+      "auto": true,
+      "scoring_model": "accumulate",
+      "desc": "下跌过程中低点不再持续创新低 = 空头动能衰竭。两项可叠加、上限 18。b2_1 用 bp_slope_window（默认 10）根收盘线性斜率对比前一个同长窗口：跌幅收窄 ≥（1-bp_slope_shrink_ratio）即 30% 以上（含转平/上拐）得 8 分；b2_2 最近 bp_flat_bars（默认 2）根最低价均未击穿之前 bp_low_window（默认 20）根阶段低点得 10 分。",
+      "items": [
+        { "id": "b2_1", "type": "reversal", "points": 8, "theory": "道氏理论·第三级别趋势衰竭", "label": "下跌斜率放缓、不再加速杀跌", "desc": "近 bp_slope_window 根收盘线性斜率 < 0 且幅度较前一同长窗口收窄 ≥30%（或已转平/上拐）" },
+        { "id": "b2_2", "type": "reversal", "points": 10, "theory": "道氏理论·低点不再递降", "label": "连续 N 根 K 不再创阶段低点", "desc": "最近 bp_flat_bars 根最低价 > 前 bp_low_window 根阶段低点（不再持续创新低）" }
+      ]
+    },
+    {
+      "code": "b3",
+      "name": "MACD 底背离（B3・动量理论）",
+      "type": "reversal_auto",
+      "weight": 0,
+      "enabled": true,
+      "auto": true,
+      "scoring_model": "accumulate",
+      "desc": "价格创阶段新低但 DIF 未同步新低 = 下跌动量衰竭。后端用 EMA12/26/9 算 DIF，并在 bp_div_lookback（默认 60）根窗口内按 ±bp_div_swing_window（默认 3）根极值找阶段低点（极值需两侧确认，单根假背离天然不计），取两个最低低点比较：后一低点价更低且 DIF 抬高→确认背离直接得 16 分。",
+      "items": [
+        { "id": "b3_1", "type": "reversal", "points": 16, "theory": "MACD 动量背离（Appel）", "label": "价创新低、DIF 拾高（底背离）", "desc": "需形成两段可比阶段低点（极值两侧各 ±3 根确认）；后段低点价更低而 DIF 更高才计分，单根假背离不计" }
+      ]
+    },
+    {
+      "code": "b4",
+      "name": "低位放量异动（B4・量价理论）",
+      "type": "reversal_auto",
+      "weight": 0,
+      "enabled": true,
+      "auto": true,
+      "scoring_model": "accumulate",
+      "desc": "前置：长期缩量阴跌之后首次明显放量——近 bp_shrink_days（默认 5）根（不含今日）均量 < MAV20×bp_shrink_vol_ratio（默认 0.7）且其中收阴根数 ≥ bp_shrink_bear_min（默认 3），不满足则本组两项均不计分（detail 说明原因）。满足后：b4_1 温和放量止跌（量 ≥ MAV20×bp_vol_mild_ratio 且不再创新低）7 分；b4_2 放量阳线突破短期压制（量 ≥ MAV20×bp_vol_break_ratio 且收阳且收盘站上近 bp_break_lookback（默认 5）根高点）9 分。上限 16。",
+      "items": [
+        { "id": "b4_1", "type": "reversal", "points": 7, "theory": "量价理论·低位放量（威科夫吸筹）", "label": "温和放量止跌", "desc": "缩量阴跌后首日量 ≥ MAV20×bp_vol_mild_ratio（默认 1.2）且收盘不再创新低" },
+        { "id": "b4_2", "type": "reversal", "points": 9, "theory": "量价理论·放量突破短期压制", "label": "放量阳线突破短期压制", "desc": "量 ≥ MAV20×bp_vol_break_ratio（默认 1.5）+ 收阳 + 收盘 > 近 bp_break_lookback 根最高" }
+      ]
+    },
+    {
+      "code": "b5",
+      "name": "底部看涨 K 线组合（B5・蜡烛图）",
+      "type": "reversal_auto",
+      "weight": 0,
+      "enabled": true,
+      "auto": true,
+      "scoring_model": "accumulate",
+      "exclusive": true,
+      "desc": "前置条件：处于阶段低位才计分（现价距 60 日最低 ≤ bp_low_zone_pct%，默认 15%），高位出现一律不计。形态为数学近似（阈值用 bp_candle_*）：底分型/锤子线/看涨吞没/启明星。命中 1 个单根信号得 6 分；命中 ≥2 个或三根启明星组合则只按「组合确认」计 14 分（与 6 分互斥，组上限 14）。",
+      "items": [
+        { "id": "b5_1", "type": "reversal", "points": 6, "theory": "蜡烛图·单根底部信号（Nison）", "label": "单根底部信号", "desc": "底分型/锤子线/看涨吞没命中任意 1 个（且未被组合确认升级）" },
+        { "id": "b5_2", "type": "reversal", "points": 14, "theory": "蜡烛图·底部组合确认", "label": "组合确认（启明星或 ≥2 个形态）", "desc": "启明星三根组合，或同时命中 ≥2 个底部形态（与单根信号互斥，只取本项 14 分）" }
+      ]
+    },
+    {
+      "code": "b6",
+      "name": "布林下轨支撑（B6・布林带理论）",
+      "type": "reversal_auto",
+      "weight": 0,
+      "enabled": true,
+      "auto": true,
+      "scoring_model": "accumulate",
+      "desc": "股价回落至布林下轨附近企稳、不再继续下探：近 bp_boll_touch_bars（默认 3）根最低价曾触及下轨（BOLL(bp_boll_period=20, bp_boll_k=2 倍标准差)）±bp_boll_tolerance_pct%（默认 1%），且当日最低不低于昨日最低、收盘站回下轨上方，三条件同时成立得 9 分。",
+      "items": [
+        { "id": "b6_1", "type": "reversal", "points": 9, "theory": "布林带（Bollinger Bands）均值回归", "label": "下轨附近企稳不再下探", "desc": "近根触下轨（±容差）+ 当日未创新低 + 收盘回到下轨上方，三条件同时成立才计分" }
+      ]
+    },
+    {
+      "code": "b7",
+      "name": "筹码低位集中（B7・筹码理论・真实接口）",
+      "type": "reversal_auto",
+      "weight": 0,
+      "enabled": true,
+      "auto": true,
+      "scoring_model": "accumulate",
+      "desc": "长期下跌后低位筹码逐步堆积、上方套牢盘减少。只用真实筹码接口（AKShare 东财 stock_cyq_em，由精选轮 --with-chip 拉回），绝不做日线近似估算。判定：获利比例 ≤ bp_chip_profit_max%（默认 20，获利抛压极小）且 90% 成本上沿距现价 ≤ bp_chip_pressure_max%（默认 12，成本重心已下沉到现价附近）同时成立得 9 分。取不到筹码一律 0 分并按场景标注：【粗筛未拉取筹码】/【筹码接口获取失败，该项不计分】/【历史时间点不请求实时筹码】。命中时 detail 附带接口原始数值摘要。",
+      "items": [
+        { "id": "b7_1", "type": "reversal", "points": 9, "theory": "筹码分布（CYQ 成本分布理论）", "label": "低位单峰密集、上方套牢盘减少", "desc": "获利比例 ≤ bp_chip_profit_max% 且 90% 成本上沿距现价 ≤ bp_chip_pressure_max%；仅真实接口数据可计分" }
       ]
     }
   ]

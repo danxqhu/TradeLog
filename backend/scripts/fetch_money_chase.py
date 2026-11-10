@@ -72,6 +72,31 @@ DEFAULT_PARAMS = {
     "manual_score_per_item": 1, "manual_score_max": 4,
     "highlight_a_total": 7, "highlight_b_total": 6,
     "request_interval_sec": 0.25, "single_call_timeout_sec": 20,
+    # ---- 招财进宝多模块打分（fp_*）：仅当后端下发 fp_compute=true 时计算，追资金路径不开启、零开销
+    #      默认值与 config/fortune_criteria.json 的 module_params 一致（真源在那边，这里只供脚本独立调试）
+    "fp_compute": False,
+    "fp_window_break": 20, "fp_vol_break_ratio": 1.1, "fp_vol_shrink_ratio": 0.7,
+    "fp_pullback_days": 2, "fp_stall_vol_ratio": 1.2, "fp_stall_max_pct": 0.5,
+    "fp_ma_short": 20, "fp_ma_long": 30, "fp_ma_slope_bars": 1,
+    "fp_dmi_period": 14, "fp_adx_strong": 40, "fp_adx_trend": 25, "fp_adx_weak": 20,
+    "fp_fib_lookback": 60, "fp_fib_ratios": [0.236, 0.382, 0.5, 0.618], "fp_fib_tolerance": 2.0,
+    "fp_box_window": 20, "fp_box_min_amp_pct": 4.0, "fp_box_retest_tolerance_pct": 1.0,
+    "fp_candle_shadow_body_ratio": 2, "fp_candle_upper_body_ratio": 0.3,
+    "fp_candle_body_pos_min": 0.6, "fp_candle_trend_lookback": 5,
+    # ---- 招财进宝衰竭止盈 W1~W8（wp_*）：仅当后端下发 fp_sell_compute=true 时计算，追资金路径不开启
+    #      默认值与 config/fortune_criteria.json 的 sell_params 一致（真源在那边，这里只供脚本独立调试）
+    "fp_sell_compute": False,
+    "wp_ma_ref": 20, "wp_dev_light": 5, "wp_dev_mid": 8, "wp_dev_severe": 12,
+    "wp_valid_break_pct": 2, "wp_swing_window": 3, "wp_struct_lookback": 60,
+    "wp_hh_shrink_ratio": 0.5, "wp_hh_shrink_min_pct": 2, "wp_vol_div_ratio": 0.8,
+    "wp_high_zone_pct": 3, "wp_stall_vol_mult": 1.5, "wp_stall_pct_max": 0.5,
+    "wp_turnover_min": 8, "wp_shadow_body_mult": 2, "wp_shadow_drop_pct": 3,
+    "wp_shadow_vol_mult": 1.5, "wp_fib_lookback": 60, "wp_fib_ext_ratios": [1.618, 2.618],
+    "wp_fib_ext_tolerance": 2, "wp_fib_min_amp_pct": 20, "wp_fib_stall_bars": 3,
+    "wp_ext2_fail_min": 2, "wp_box_window": 20, "wp_box_min_amp_pct": 4,
+    "wp_box_touch_min": 3, "wp_fake_break_days": 5, "wp_fake_back_pct": 1,
+    "wp_div_lookback": 60, "wp_gain_period": 60, "wp_gain_range1": [80, 150],
+    "wp_gain_range2": 150,
 }
 
 P = dict(DEFAULT_PARAMS)   # 运行时生效参数
@@ -815,6 +840,645 @@ def detect_m_head(df, tolerance_pct, prominence_pct):
         return True, f"疑似 M 头：两顶 {h_vals[a]:.2f}/{h_vals[b]:.2f}（差 {diff_pct:.1f}%），颈线 {neck:.2f} 已跌破", marks
     return False, f"双顶雏形但颈线 {neck:.2f} 未破，暂不判反转", marks
 
+
+# ============================================================ 招财进宝多模块原始判定（M3~M8）
+# 约定：本区只输出「事实 + 命中与否 + 中文依据」，**不算分**。子项分值/模块权重/开关
+#       全在后端 config/fortune_criteria.json（items.points / weight / enabled）里折算，
+#       这样改分值不用动 Python。阈值（窗口、倍数、容差）全部走 fp_* 参数，不硬编码。
+
+def _fp_num(v, nd=2):
+    """详情文案用：None → '—'，否则固定小数位"""
+    return '—' if v is None else f"{v:,.{nd}f}"
+
+
+def _fp_int(v):
+    return '—' if v is None else f"{v:,.0f}"
+
+
+def fp_volume_series(df, ind):
+    """量能序列：盘中末根换成按已交易时间折算的全天估算量（与追资金口径一致）"""
+    v = df['volume'].astype(float).copy()
+    if ind.get('is_live') and len(v):
+        ev = num(ind.get('est_volume'))
+        if ev is not None:
+            v.iloc[-1] = ev
+    return v
+
+
+def fp_volume_price(df, ind):
+    """M3 基础量价逻辑（累加型）：突破放量 / 回调缩量 / 新高无量 / 放量滞涨"""
+    win = max(2, int(pget('fp_window_break', 20)))
+    mav_win = max(2, int(pget('vol_ma_period', 20)))
+    n = len(df)
+    v = fp_volume_series(df, ind)
+    # 均量不含当日（shift(1)），否则当日自身把基数拉高、放量倍数失真
+    mav = v.shift(1).rolling(mav_win).mean()
+    mav20 = num(mav.iloc[-1])
+    price = num(df['close'].iloc[-1])
+    high = num(df['high'].iloc[-1])
+    today_v = num(v.iloc[-1])
+    pct = num(ind.get('today_pct'))
+
+    prior = df['high'].iloc[max(0, n - 1 - win):n - 1]
+    prev_high = num(prior.max()) if len(prior) else None
+    prev_high_idx = prior.idxmax() if len(prior) and prev_high is not None else None
+    vol_at_prev_high = num(v.loc[prev_high_idx]) if prev_high_idx is not None else None
+
+    break_thr = None if mav20 is None else mav20 * float(pget('fp_vol_break_ratio', 1.1))
+    shrink_thr = None if mav20 is None else mav20 * float(pget('fp_vol_shrink_ratio', 0.7))
+    stall_thr = None if mav20 is None else mav20 * float(pget('fp_stall_vol_ratio', 1.2))
+
+    # vp1 突破放量：收盘上穿窗口前高 + 量达标
+    vp1 = None not in (price, prev_high, break_thr, today_v) and price > prev_high and today_v > break_thr
+    d1 = (f"收盘 {_fp_num(price)} vs 前 {win} 根高点 {_fp_num(prev_high, 3)}；"
+          f"量 {_fp_int(today_v)} vs MAV{mav_win}×{pget('fp_vol_break_ratio', 1.1)}={_fp_int(break_thr)}")
+    if prev_high is not None and price is not None and price <= prev_high:
+        d1 += '（未突破前高，不给分）'
+
+    # vp2 回调缩量：连续回落 + 缩量
+    k = max(1, int(pget('fp_pullback_days', 2)))
+    downs, closes = 0, df['close'].astype(float)
+    for j in range(n - 1, max(0, n - 1 - k) - 1, -1):
+        if j < 1:
+            break
+        if num(closes.iloc[j]) is None or num(closes.iloc[j - 1]) is None:
+            break
+        if closes.iloc[j] < closes.iloc[j - 1]:
+            downs += 1
+        else:
+            break
+    vp2 = downs >= k and None not in (shrink_thr, today_v) and today_v < shrink_thr
+    d2 = (f"连续回落 {downs}/{k} 根；量 {_fp_int(today_v)} vs 缩量线 {_fp_int(shrink_thr)}"
+          f"（MAV{mav_win}×{pget('fp_vol_shrink_ratio', 0.7)}）")
+
+    # vp3 新高无量（量价背离，风险）
+    new_high = None not in (high, prev_high) and high > prev_high
+    vp3 = new_high and None not in (today_v, vol_at_prev_high) and today_v < vol_at_prev_high
+    d3 = (f"盘中 {_fp_num(high, 3)} 创近 {win} 根新高，量 {_fp_int(today_v)} < 前高量 "
+          f"{_fp_int(vol_at_prev_high)}（无量推进）" if new_high
+          else f"未创窗口新高（盘中 {_fp_num(high, 3)} vs 前高 {_fp_num(prev_high, 3)}），无背离")
+
+    # vp4 放量滞涨（风险）
+    stall_max = float(pget('fp_stall_max_pct', 0.5))
+    vp4 = None not in (stall_thr, today_v, pct) and today_v > stall_thr and abs(pct) < stall_max
+    d4 = (f"量 {_fp_int(today_v)} > 放量线 {_fp_int(stall_thr)}，但涨跌幅 {pct:+.2f}% "
+          f"不足 {stall_max}%（大量成交不推进）" if vp4 else
+          f"量 {_fp_int(today_v)}（放量线 {_fp_int(stall_thr)}），涨跌幅 "
+          f"{_fp_num(pct)}%（需 <{stall_max}% 才命中）")
+
+    return {
+        "model": "accumulate",
+        "items": [
+            {"id": "vp1", "met": bool(vp1), "detail": d1},
+            {"id": "vp2", "met": bool(vp2), "detail": d2},
+            {"id": "vp3", "met": bool(vp3), "type": "risk", "detail": d3},
+            {"id": "vp4", "met": bool(vp4), "type": "risk", "detail": d4},
+        ],
+        "facts": {
+            "window": win, "vol_ma_period": mav_win, "mav": rnd(mav20, 0),
+            "prev_high": rnd(prev_high, 3), "vol_at_prev_high": rnd(vol_at_prev_high, 0),
+            "volume": rnd(today_v, 0),
+            "vol_ratio": rnd(today_v / mav20, 3) if (today_v is not None and mav20) else None,
+        },
+    }
+
+
+def fp_slope_pos(series, bars):
+    """最近 bars 根均线最小二乘斜率是否 > 0（样本不足返回 None）"""
+    vals = [num(x) for x in list(series.iloc[-int(bars):])]
+    vals = [x for x in vals if x is not None]
+    if len(vals) < 2:
+        return None
+    k = len(vals)
+    xm = (k - 1) / 2.0
+    ym = sum(vals) / k
+    den = sum((i - xm) ** 2 for i in range(k))
+    if not den:
+        return None
+    return (sum((i - xm) * (y - ym) for i, y in enumerate(vals)) / den) > 0
+
+
+def fp_ma(df, ind):
+    """M4 均线体系（累加型）：MA20/MA30 方向、价格相对位置、多头排列；另给排列标签"""
+    sp, lp = int(pget('fp_ma_short', 20)), int(pget('fp_ma_long', 30))
+    s = df['close'].rolling(sp).mean()
+    l = df['close'].rolling(lp).mean()
+    ms, msp = num(s.iloc[-1]), num(s.iloc[-2]) if len(df) > 1 else None
+    ml, mlp = num(l.iloc[-1]), num(l.iloc[-2]) if len(df) > 1 else None
+    price = num(df['close'].iloc[-1])
+    slope_bars = max(1, int(pget('fp_ma_slope_bars', 1)))
+
+    def direction(series, cur, prev, label):
+        """向上判定：默认对比前一根；fp_ma_slope_bars>1 改用拟合斜率"""
+        if slope_bars > 1:
+            pos = fp_slope_pos(series, slope_bars)
+            return bool(pos) if pos is not None else False, f"{label} 近 {slope_bars} 根拟合斜率{'向上' if pos else '走平/向下'}"
+        ok = None not in (cur, prev) and cur > prev
+        return bool(ok), f"{label} {_fp_num(cur, 3)} vs 前值 {_fp_num(prev, 3)}（{'向上' if ok else '走平/向下'}）"
+
+    up_s, ds = direction(s, ms, msp, f"MA{sp}")
+    up_l, dl = direction(l, ml, mlp, f"MA{lp}")
+    above_s = None not in (price, ms) and price > ms
+    above_l = None not in (price, ml) and price > ml
+    bull = None not in (ms, ml) and ms > ml
+
+    # 排列标签（只作参考展示，不重复计分）
+    gap_pct = (abs(ms - ml) / ml * 100) if (ms is not None and ml) else None
+    tangle_lt = float(pget('fp_box_min_amp_pct', 4.0)) / 4.0
+    if gap_pct is None:
+        label = '数据不足'
+    elif gap_pct < tangle_lt:
+        label = '缠绕震荡'
+    else:
+        label = '多头排列' if bull else '空头排列'
+
+    return {
+        "model": "accumulate",
+        "state_label": label,
+        "items": [
+            {"id": "ma20_up", "met": up_s, "detail": ds},
+            {"id": "ma30_up", "met": up_l, "detail": dl},
+            {"id": "above_ma20", "met": above_s, "detail": f"收盘 {_fp_num(price, 3)} vs MA{sp} {_fp_num(ms, 3)}"},
+            {"id": "above_ma30", "met": above_l, "detail": f"收盘 {_fp_num(price, 3)} vs MA{lp} {_fp_num(ml, 3)}"},
+            {"id": "ma_bull", "met": bull, "detail": f"MA{sp} {_fp_num(ms, 3)} vs MA{lp} {_fp_num(ml, 3)}（{label}，间距 {_fp_num(gap_pct, 2)}%）"},
+        ],
+        "facts": {
+            "ma_short_period": sp, "ma_long_period": lp, "slope_bars": slope_bars,
+            "ma_short": rnd(ms, 3), "ma_short_prev": rnd(msp, 3),
+            "ma_long": rnd(ml, 3), "ma_long_prev": rnd(mlp, 3),
+            "close": rnd(price, 3), "gap_pct": rnd(gap_pct, 2), "arrange": label,
+        },
+    }
+
+
+def fp_dmi(df, ind):
+    """M5 ADX/DMI 趋势强度（分档型，只命中一档）：从上到下优先级匹配、命中即停止（v4.1 定档：8% 权重计入 A 买入总分）
+    顺序：①强多头 ②中多头 ③弱多头 ④震荡 ⑤空头兜底；只要 PDI>MDI 多头先落档（ADX<weak 也算弱多头），非多头侧才看震荡档"""
+    period = int(pget('fp_dmi_period', 14))
+    if 'adx' in df.columns and period == int(pget('n_adx', 14)):
+        adx, pdi, mdi = num(df['adx'].iloc[-1]), num(df['pdi'].iloc[-1]), num(df['mdi'].iloc[-1])
+    else:  # 周期被改过就本地重算一次（copy 不污染追资金在用的 df）
+        tmp = calc_adx(df.copy(), period, int(pget('n_adx_smooth', 6)))
+        adx, pdi, mdi = num(tmp['adx'].iloc[-1]), num(tmp['pdi'].iloc[-1]), num(tmp['mdi'].iloc[-1])
+    strong, trend, weak = float(pget('fp_adx_strong', 40)), float(pget('fp_adx_trend', 25)), float(pget('fp_adx_weak', 20))
+    facts = {"adx": rnd(adx, 2), "pdi": rnd(pdi, 2), "mdi": rnd(mdi, 2), "period": period,
+             "ad_thresholds": {"strong": strong, "trend": trend, "weak": weak}}
+    if None in (adx, pdi, mdi):
+        return {"model": "tier", "state": None, "items": [], "facts": facts, "note": 'DMI 数据不足（预热 K 线不够）'}
+    base = f"ADX {adx:.1f}（强/趋势/震荡线 {strong:g}/{trend:g}/{weak:g}），PDI {pdi:.1f} vs MDI {mdi:.1f}"
+    if pdi > mdi:  # 优先级①②③：多头占优先按 ADX 强度落多头档（弱多头优先于震荡）
+        if adx > strong:
+            state, detail = 't_strong_bull', base + '；优先级① 强多头趋势'
+        elif adx > trend:
+            state, detail = 't_mid_bull', base + '；优先级② 多头趋势成型'
+        else:
+            state, detail = 't_weak_bull', base + '；优先级③ 多头占优但强度不足（ADX≤趋势线也先落弱多头，不落震荡）'
+    elif adx < weak:  # 优先级④：非多头占优且 ADX 低于震荡线 → 震荡行情
+        state, detail = 't_choppy', base + '；优先级④ 震荡行情，不适合趋势策略'
+    else:  # 优先级⑤兜底：MDI≥PDI 且 ADX 不达震荡档 → 空头占优
+        state, detail = 't_bear', base + '；优先级⑤ 空头占优 → 0 分（ADX 高只说明杀跌有强度）'
+    return {"model": "tier", "state": state, "items": [{"id": state, "met": True, "detail": detail}], "facts": facts}
+
+
+def fp_fib(df, ind):
+    """M6 斐波那契回撤/反弹价位（分档型）：简易全局波段，后续可升级为 HH/HL 分段"""
+    look = max(5, int(pget('fp_fib_lookback', 60)))
+    tol = float(pget('fp_fib_tolerance', 2.0))
+    sub = df.tail(look)
+    price = num(df['close'].iloc[-1])
+    hi_idx, lo_idx = sub['high'].idxmax(), sub['low'].idxmin()
+    h, l = num(df.loc[hi_idx, 'high']) if hi_idx is not None else None, num(df.loc[lo_idx, 'low']) if lo_idx is not None else None
+    rng = None if (h is None or l is None) else h - l
+    ratios = pget('fp_fib_ratios', [0.236, 0.382, 0.5, 0.618]) or [0.236, 0.382, 0.5, 0.618]
+    if not (price and rng and rng > 0):
+        return {"model": "tier", "state": None, "items": [], "facts": {"close": rnd(price, 3)}, "note": '波段幅度为 0 或数据不足，无法算斐波那契位'}
+    up_wave = hi_idx > lo_idx  # 低点在前、高点在后 → 上涨波段（看回踩支撑）；反之 → 下跌波段（看反弹压力）
+    op = num(df['open'].iloc[-1])
+    last_pct = num(df['pct'].iloc[-1]) if 'pct' in df.columns else None
+    bullish = (price > op) if op is not None else bool((last_pct or 0) > 0)
+    levels, nearest = {}, None
+    for r in ratios:
+        lv = (h - rng * float(r)) if up_wave else (l + rng * float(r))
+        key = f"{float(r):g}"
+        dev = abs(price - lv) / price * 100
+        levels[key] = {"price": rnd(lv, 3), "deviation_pct": rnd(dev, 2)}
+        if nearest is None or dev < nearest[1]:
+            nearest = (key, dev)
+    nk, nd = nearest
+    key_ratios = {'0.5', '0.618', '.5', '.618'}
+    wave_txt = '上涨波段回踩支撑' if up_wave else '下跌波段反弹压力'
+    base = (f"{wave_txt}：波段高 {_fp_num(h, 3)} / 低 {_fp_num(l, 3)}（振幅 {rng / price * 100:.1f}%），"
+            f"现价 {_fp_num(price, 3)} 距 {nk} 位 {_fp_num(nd, 2)}%（容差 {tol:g}%），"
+            f"当日{'收阳' if bullish else '收阴'}")
+    if nd > tol:
+        state, detail = 'f_na', base + ' → 不在关键回撤区，中性参考'
+    elif not up_wave and not bullish:
+        state, detail = 'f_resist', base + ' → 反弹触及压力位承压回落'
+    elif up_wave and nk in key_ratios and bullish:
+        state, detail = 'f_key_hold', base + ' → 回踩关键支撑止跌收阳'
+    elif up_wave and nk == '0.382':
+        state, detail = 'f382_hold', base + ' → 浅回踩 0.382 企稳'
+    else:
+        state, detail = 'f_na', base + f' → 落在 {nk} 位（非关键档或方向不匹配），中性参考'
+    facts = {"wave_high": rnd(h, 3), "wave_low": rnd(l, 3), "range": rnd(rng, 3),
+             "direction": 'up_wave' if up_wave else 'down_wave', "lookback": look,
+             "levels": levels, "nearest_level": nk, "nearest_deviation_pct": rnd(nd, 2)}
+    return {"model": "tier", "state": state, "items": [{"id": state, "met": True, "detail": detail}], "facts": facts}
+
+
+def fp_box(df, ind):
+    """M7 箱体区间（分档型）：上沿/下沿取前 N 根极值（不含当日），突破一律看收盘价"""
+    win = max(2, int(pget('fp_box_window', 20)))
+    tol = float(pget('fp_box_retest_tolerance_pct', 1.0))
+    min_amp = float(pget('fp_box_min_amp_pct', 4.0))
+    n = len(df)
+    prior = df.iloc[max(0, n - 1 - win):n - 1]
+    box_top, box_bottom = num(prior['high'].max()), num(prior['low'].min())
+    price = num(df['close'].iloc[-1])
+    if None in (box_top, box_bottom, price) or box_bottom <= 0:
+        return {"model": "tier", "state": None, "items": [], "facts": {"close": rnd(price, 3)}, "note": '箱体数据不足'}
+    amp_pct = (box_top - box_bottom) / box_bottom * 100
+    mid = (box_top + box_bottom) / 2
+    base = (f"箱体（前 {win} 根，不含当日）上沿 {_fp_num(box_top, 3)} / 中轨 {_fp_num(mid, 3)} / "
+            f"下沿 {_fp_num(box_bottom, 3)}，振幅 {amp_pct:.1f}%（最小 {min_amp:g}%），收盘 {_fp_num(price, 3)}")
+    if amp_pct < min_amp:
+        state, detail = 'b_narrow', base + ' → 振幅不足，不构成有效箱体，按震荡中性处理'
+    elif price > box_top:
+        state, detail = 'b_break', base + ' → 收盘站上上沿（突破确认，非盘中刺破）'
+    elif abs(price - box_top) / box_top * 100 <= tol:
+        state, detail = 'b_retest', base + f' → 贴在上沿 ±{tol:g}% 内且未收在下方（回踩支撑）'
+    elif price < box_bottom:
+        state, detail = 'b_break_down', base + ' → 收盘跌破下沿（破位）'
+    else:
+        state, detail = 'b_inside', base + ' → 箱体内部震荡'
+    return {"model": "tier", "state": state,
+            "items": [{"id": state, "met": True, "detail": detail}],
+            "facts": {"box_top": rnd(box_top, 3), "box_bottom": rnd(box_bottom, 3), "mid": rnd(mid, 3),
+                      "amp_pct": rnd(amp_pct, 2), "window": win, "min_amp_pct": min_amp}}
+
+
+def fp_candle(df, ind):
+    """M8 基础蜡烛线（分档型，默认不计分、只提示）：锤子线 / 看涨吞没 / 看跌吞没"""
+    o, h, l, c = num(df['open'].iloc[-1]), num(df['high'].iloc[-1]), num(df['low'].iloc[-1]), num(df['close'].iloc[-1])
+    po, pc = num(df['open'].iloc[-2]) if len(df) > 1 else None, num(df['close'].iloc[-2]) if len(df) > 1 else None
+    if None in (o, h, l, c) or h <= l:
+        return {"model": "tier", "state": 'c_none', "items": [{"id": "c_none", "met": True, "detail": 'K 线数据不足，未做形态判定'}],
+                "facts": {}}
+    rng_ratio = float(pget('fp_candle_shadow_body_ratio', 2))
+    up_ratio = float(pget('fp_candle_upper_body_ratio', 0.3))
+    pos_min = float(pget('fp_candle_body_pos_min', 0.6))
+    look = max(1, int(pget('fp_candle_trend_lookback', 5)))
+    body = abs(c - o)
+    body_eff = max(body, c * 0.001)  # 十宁/一字护体：避免实体为 0 时比例无意义
+    upper = h - max(o, c)
+    lower = min(o, c) - l
+    body_pos = (max(o, c) - l) / (h - l)
+    ref = num(df['close'].iloc[-1 - look])
+    trend_pct = (c / ref - 1) * 100 if ref else None
+    geom = (f"实体 {body_eff:.3f}，上影 {upper:.3f}，下影 {lower:.3f}，实体位置 {body_pos * 100:.0f}%"
+            f"（需 ≥{pos_min * 100:g}%），近 {look} 根累计 {_fp_num(trend_pct, 2)}%")
+    hammer = (lower >= body_eff * rng_ratio and upper <= body_eff * up_ratio
+              and body_pos >= pos_min and (trend_pct is not None and trend_pct < 0))
+    prev_bear = None not in (po, pc) and pc < po
+    prev_bull = None not in (po, pc) and pc > po
+    bullish, bearish = c > o, c < o
+    bull_engulf = prev_bear and bullish and c > po and o < pc
+    bear_engulf = prev_bull and bearish and c < po and o > pc
+    if hammer:
+        state, detail = 'c_hammer', geom + ' → 下影够长、上影短、实体在上端且前置下跌，标准锤子线（底部看涨）'
+    elif bull_engulf:
+        state, detail = 'c_bull_engulf', geom + f'→ 昨阴（{_fp_num(pc, 3)}/{_fp_num(po, 3)}）今阳实体完全包住，看涨吞没'
+    elif bear_engulf:
+        state, detail = 'c_bear_engulf', geom + f'→ 昨阳（{_fp_num(pc, 3)}/{_fp_num(po, 3)}）今阴实体完全包住，看跌吞没（顶部预警，仅提示不扣分）'
+    else:
+        state, detail = 'c_none', geom + ' → 未命中标准形态（数学近似不等于看图标准形态，人工复核优先）'
+    return {"model": "tier", "state": state, "items": [{"id": state, "met": True, "detail": detail}],
+            "facts": {"open": rnd(o, 3), "high": rnd(h, 3), "low": rnd(l, 3), "close": rnd(c, 3),
+                      "prev_open": rnd(po, 3), "prev_close": rnd(pc, 3),
+                      "body": rnd(body, 3), "upper_shadow": rnd(upper, 3), "lower_shadow": rnd(lower, 3),
+                      "body_pos": rnd(body_pos, 3), "trend_pct": rnd(trend_pct, 2)}}
+
+
+def fortune_modules(df, ind):
+    """
+    招财进宝 M3~M8 模块原始判定（只给后端下发 fp_compute=true 时跑，追资金不受影响）
+    返回 {module_code: {model, items|state, facts}}；日线不足 30 根返回 None（后端按「无法判定」剔除该模块权重）
+    """
+    if df is None or len(df) < 30:
+        return None
+    return clean({
+        "volume_price": fp_volume_price(df, ind),
+        "ma": fp_ma(df, ind),
+        "dmi": fp_dmi(df, ind),
+        "fib": fp_fib(df, ind),
+        "box": fp_box(df, ind),
+        "candle": fp_candle(df, ind),
+    })
+
+
+# ============================================================ 衰竭止盈 W1～W8（sell_modules）
+
+def _wp_item(iid, met, detail):
+    return {"id": iid, "met": bool(met), "detail": detail}
+
+
+def _wp_group(items, facts, applicable=True, note=None):
+    out = {"model": "accumulate", "applicable": bool(applicable), "items": items, "facts": facts}
+    if note:
+        out["note"] = note
+    return out
+
+
+def wp_granville_sell(df, ind):
+    """W1 葛兰碧卖出信号组：乖离超买（w1_1 分档 level）/回踩不上/跌破均线+拐头/反弹承压"""
+    p = max(5, int(pget('wp_ma_ref', 20)))
+    s = df['close'].rolling(p).mean()
+    price = num(df['close'].iloc[-1])
+    m, mp, mp2 = num(s.iloc[-1]), num(s.iloc[-2]), num(s.iloc[-3]) if len(df) > 2 else None
+    light, midv, severe = float(pget('wp_dev_light', 5)), float(pget('wp_dev_mid', 8)), float(pget('wp_dev_severe', 12))
+    brk = float(pget('wp_valid_break_pct', 2)) / 100
+    dev = (price / m - 1) * 100 if (m and price is not None) else None
+    level = 0
+    if dev is not None:
+        if dev >= severe: level = 3
+        elif dev >= midv: level = 2
+        elif dev >= light: level = 1
+    tier_txt = {0: '未触发', 1: '轻度', 2: '明显', 3: '严重'}[level]
+    i1 = _wp_item('w1_1', level > 0,
+                  f"收盘 {_fp_num(price, 3)} vs MA{p} {_fp_num(m, 3)}，乖离 {_fp_num(dev, 2)}%（轻/显/严 {light:g}/{midv:g}/{severe:g}%）→ {tier_txt}")
+    # w1_2 回踩均线无法重新站上：MA 仍上行，近 5 根曾触及均线，但近 3 根收盘连续未重新站上且现价已在线下
+    lows5 = [num(df['low'].iloc[-k]) for k in range(5, 0, -1)]
+    mas5 = [num(s.iloc[-k]) for k in range(5, 0, -1)]
+    touch = any(l is not None and mm is not None and l <= mm * 1.01 for l, mm in zip(lows5, mas5))
+    below3 = all(num(df['close'].iloc[-k]) is not None and num(s.iloc[-k]) is not None
+                 and num(df['close'].iloc[-k]) < num(s.iloc[-k]) * (1 - brk) for k in range(1, 4)) if len(df) >= 3 else False
+    rising = None not in (m, mp2) and m > mp2
+    ok2 = bool(touch and below3 and rising and m and price is not None and price < m * (1 - brk))
+    i2 = _wp_item('w1_2', ok2, f"回踩触线={'是' if touch else '否'}，近3根收盘均未重新站上 MA{p}×(1−{brk*100:g}%)={'是' if below3 else '否'}，均线{'上行' if rising else '未上行'}")
+    # w1_3 跌破均线 + 均线拐头走平向下：有效跌破且均线由升转平/拐头（前一根还在升，本根不再升）
+    turn = None not in (m, mp, mp2) and mp > mp2 and m <= mp
+    ok3 = bool(m and price is not None and price < m * (1 - brk) and turn)
+    i3 = _wp_item('w1_3', ok3, f"收盘 {_fp_num(price, 3)} 有效跌破 MA{p} {_fp_num(m, 3)}（>{brk*100:g}%）={'是' if (m and price is not None and price < m * (1 - brk)) else '否'}；均线 {_fp_num(mp, 3)}→{_fp_num(m, 3)} {'由升转平/拐头向下' if turn else '仍在上行'}")
+    # w1_4 反弹碰均线承压回落：均线向下，价在线下反弹触及均线后当日收阴
+    fall = None not in (m, mp) and m < mp
+    below = m and price is not None and price < m
+    maxh5 = num(df['high'].tail(5).max())
+    touched = maxh5 is not None and m is not None and maxh5 >= m * 0.99
+    o = num(df['open'].iloc[-1])
+    bearish = None not in (o, price) and price < o
+    ok4 = bool(fall and below and touched and bearish)
+    i4 = _wp_item('w1_4', ok4, f"MA{p} {'向下' if fall else '不向下'}；近5高 {_fp_num(maxh5, 3)} 触及均线={'是' if touched else '否'}；当日{'收阴' if bearish else '未收阴'}")
+    facts = {"ma_period": p, "ma": rnd(m, 3), "ma_prev": rnd(mp, 3), "close": rnd(price, 3),
+             "deviation_pct": rnd(dev, 2), "dev_level": level,
+             "dev_thresholds": {"light": light, "mid": midv, "severe": severe}}
+    return _wp_group([i1, i2, i3, i4], facts)
+
+
+def wp_dow_fail(df, ind):
+    """W2 道氏结构衰竭：新高抬升幅度收窄 / 有效回调低点被跌破。无清晰波段结构整组不生效"""
+    look, win = int(pget('wp_struct_lookback', 60)), max(1, int(pget('wp_swing_window', 3)))
+    price = num(df['close'].iloc[-1])
+    sub = df.tail(look).reset_index(drop=True)
+    highs, lows = find_swings(sub, window=win)
+    facts = {"lookback": look, "swing_window": win, "swing_highs": len(highs), "swing_lows": len(lows),
+             "close": rnd(price, 3)}
+    if len(highs) < 2 or len(lows) < 2:
+        facts["h_vals"] = [rnd(num(sub.loc[i, 'high']), 3) for i in highs]
+        facts["l_vals"] = [rnd(num(sub.loc[i, 'low']), 3) for i in lows]
+        return _wp_group([_wp_item('w2_0', False, '无清晰波段结构，本组不生效'),
+                          _wp_item('w2_1', False, '无清晰波段结构，本组不生效')],
+                         facts, applicable=False, note='无清晰波段结构（高低点不足两段），本组不生效不计分')
+    h_vals = [num(sub.loc[i, 'high']) for i in highs]
+    l_vals = [num(sub.loc[i, 'low']) for i in lows]
+    facts["h_vals"] = [rnd(x, 3) for x in h_vals]
+    facts["l_vals"] = [rnd(x, 3) for x in l_vals]
+    # w2_0 新高抬升幅度持续收窄：需至少 3 个波段高点，末段抬升 < 前段抬升×比例（或绝对幅度<下限）
+    ratio, min_pct = float(pget('wp_hh_shrink_ratio', 0.5)), float(pget('wp_hh_shrink_min_pct', 2))
+    if len(h_vals) >= 3 and None not in (h_vals[-1], h_vals[-2], h_vals[-3]):
+        up_last, up_prev = h_vals[-1] - h_vals[-2], h_vals[-2] - h_vals[-3]
+        pct_last = up_last / h_vals[-2] * 100 if h_vals[-2] else None
+        ok20 = (up_last > 0 and up_prev > 0 and up_last < up_prev * ratio) or (up_last > 0 and pct_last is not None and pct_last < min_pct)
+        d20 = (f"两段新高抬升 {rnd(up_prev, 3)}→{rnd(up_last, 3)}（末段幅度 {_fp_num(pct_last, 2)}%，"
+               f"门槛：前段×{ratio:g} 或幅度<{min_pct:g}%）")
+    else:
+        ok20, d20 = False, '波段高点不足 3 个，无法比较抬升幅度'
+    # w2_1 有效回调低点被跌破：收盘跌破最近一个波段回调低点 = 趋势反转确认
+    last_l = l_vals[-1]
+    ok21 = None not in (price, last_l) and price < last_l
+    i21 = _wp_item('w2_1', ok21, f"收盘 {_fp_num(price, 3)} vs 最近有效回调低 {_fp_num(last_l, 3)}（{'已跌破，趋势反转确认' if ok21 else '未跌破'}）")
+    return _wp_group([_wp_item('w2_0', ok20, d20), i21], facts)
+
+
+def wp_volume_fail(df, ind):
+    """W3 量价衰竭：新高量不及前高 / 高位放量滞涨 / 高位放量长上影。高位=现价距 60 日高 ≤ wp_high_zone_pct%"""
+    price = num(df['close'].iloc[-1])
+    today_high = num(df['high'].iloc[-1])
+    today_vol = num(df['volume'].iloc[-1])
+    vma = ind.get('vol_ma')
+    high60 = ind.get('high60')
+    hv_zone = float(pget('wp_high_zone_pct', 3)) / 100
+    at_high = None not in (price, high60) and high60 > 0 and price >= high60 * (1 - hv_zone)
+    o = num(df['open'].iloc[-1])
+    body = abs((price or 0) - (o or 0))
+    body_eff = max(body, (price or 0) * 0.001)
+    upper = (today_high - max(o or 0, price or 0)) if today_high is not None else None
+    facts = {"close": rnd(price, 3), "high60": rnd(high60, 3), "at_high": at_high,
+             "today_vol": rnd(today_vol, 0), "vma20": rnd(vma, 0), "vol_ratio": rnd((today_vol / vma) if (today_vol and vma) else None, 2)}
+    # w3_1 新高但量能低于前高（量价顶背离）：今日盘中创 60 日新高，量 < 前高当日量×比例
+    div_ratio = float(pget('wp_vol_div_ratio', 0.8))
+    prior = df['high'].iloc[-60:-1]
+    ok31, d31 = False, '今日未创 60 日新高，无顶背离'
+    if today_high is not None and high60 is not None and today_high >= high60 * 0.999 and len(prior.dropna()):
+        pi = prior.idxmax()
+        prev_hi, prev_vol = num(prior.loc[pi]), num(df['volume'].loc[pi])
+        facts["prev_high"], facts["prev_high_vol"] = rnd(prev_hi, 3), rnd(prev_vol, 0)
+        ok31 = None not in (today_vol, prev_vol) and prev_vol > 0 and today_vol < prev_vol * div_ratio
+        d31 = (f"新高 {rnd(today_high, 3)}≥前高 {rnd(prev_hi, 3)}，当日量 {rnd(today_vol, 0)} vs 前高日量 {rnd(prev_vol, 0)}"
+               f"（需<{div_ratio:g}×，实际 {rnd(today_vol / prev_vol, 2) if (today_vol and prev_vol) else '—'}×）")
+    # w3_2 高位放量滞涨、高换手不创新高：高位区 + 量≥倍数×MAV20 + 涨幅≤上限 + 收盘未创 60 日收盘新高
+    stall_mult, stall_pct = float(pget('wp_stall_vol_mult', 1.5)), float(pget('wp_stall_pct_max', 0.5))
+    turnover = num(df['turnover'].iloc[-1]) if 'turnover' in df.columns else None
+    c_max60 = num(df['close'].iloc[-60:-1].max())
+    no_new_close = None not in (price, c_max60) and price < c_max60
+    vol_ok = None not in (today_vol, vma) and vma > 0 and today_vol >= vma * stall_mult
+    pct_now = num(df['pct'].iloc[-1])
+    flat = pct_now is not None and abs(pct_now) <= stall_pct
+    ok32 = bool(at_high and vol_ok and flat and no_new_close)
+    to_txt = f"，换手 {_fp_num(turnover, 2)}%（门槛 {pget('wp_turnover_min', 8)}%）" if turnover is not None else '，换手数据缺失不卡'
+    d32 = (f"高位区={'是' if at_high else '否'}，量 {rnd((today_vol / vma) if (today_vol and vma) else None, 2)}×MAV20"
+           f"（需≥{stall_mult:g}×），涨幅 {_fp_num(pct_now, 2)}%（需≤{stall_pct:g}%），收盘未创新低位新高={no_new_close}{to_txt}")
+    # w3_3 高位放量长上影冲高回落：盘中创阶段新高后回落，上影≥实体×倍数、距高点回落≥百分比、量够
+    sh_mult, sh_drop, sh_vol = float(pget('wp_shadow_body_mult', 2)), float(pget('wp_shadow_drop_pct', 3)), float(pget('wp_shadow_vol_mult', 1.5))
+    new_high_today = None not in (today_high, high60) and today_high >= high60 * 0.999
+    pullback = None not in (today_high, price) and today_high > 0 and (today_high - price) / today_high * 100 >= sh_drop
+    long_shadow = None not in (upper,) and upper >= body_eff * sh_mult
+    vol_ok3 = None not in (today_vol, vma) and vma > 0 and today_vol >= vma * sh_vol
+    ok33 = bool(new_high_today and pullback and long_shadow and vol_ok3)
+    drop_pct = (today_high - price) / today_high * 100 if (today_high and price is not None and today_high > 0) else None
+    d33 = (f"盘中创新高={new_high_today}，上影 {_fp_num(upper, 3)} vs 实体 {_fp_num(body_eff, 3)}（需≥{sh_mult:g}×），"
+           f"距高回落 {_fp_num(drop_pct, 2)}%（需≥{sh_drop:g}%），量 {rnd((today_vol / vma) if (today_vol and vma) else None, 2)}×（需≥{sh_vol:g}×）")
+    facts["upper_shadow"], facts["pullback_pct"] = rnd(upper, 3), rnd(drop_pct, 2)
+    return _wp_group([_wp_item('w3_1', ok31, d31), _wp_item('w3_2', ok32, d32), _wp_item('w3_3', ok33, d33)], facts)
+
+
+def wp_fib_ext(df, ind):
+    """W4 斐波那契扩展压力位：波段低→高外推 1.618/2.618；波段幅不足整组不生效"""
+    look = max(10, int(pget('wp_fib_lookback', 60)))
+    tol = float(pget('wp_fib_ext_tolerance', 2)) / 100
+    min_amp = float(pget('wp_fib_min_amp_pct', 20))
+    ratios = pget('wp_fib_ext_ratios', [1.618, 2.618]) or [1.618, 2.618]
+    price = num(df['close'].iloc[-1])
+    sub = df.tail(look)
+    h, l = num(sub['high'].max()), num(sub['low'].min())
+    rng = None if (h is None or l is None) else h - l
+    amp_pct = (rng / l * 100) if (rng is not None and l) else None
+    facts = {"lookback": look, "wave_high": rnd(h, 3), "wave_low": rnd(l, 3), "amp_pct": rnd(amp_pct, 2),
+             "close": rnd(price, 3), "min_amp_pct": min_amp}
+    if amp_pct is None or amp_pct < min_amp or rng is None or not price:
+        return _wp_group([_wp_item('w4_1', False, '波段幅度不足或数据缺失，本组不生效'),
+                          _wp_item('w4_2', False, '波段幅度不足或数据缺失，本组不生效')],
+                         facts, applicable=False, note='无清晰波段结构（幅度 < 门槛），本组不生效不计分')
+    exts = {float(r): l + rng * float(r) for r in ratios}
+    facts["extensions"] = {f"{r:g}": rnd(v, 3) for r, v in exts.items()}
+    e1618 = exts.get(1.618, exts[min(exts)])
+    e2618 = exts.get(2.618)
+    stall_bars = max(2, int(pget('wp_fib_stall_bars', 3)))
+    near1 = abs(price - e1618) / price <= tol if e1618 else False
+    seg = df.tail(stall_bars)
+    seg_span = (num(seg['high'].max()) - num(seg['low'].min())) / price * 100 if len(seg) >= 2 and price else None
+    stall = seg_span is not None and seg_span <= tol * 100 * 1.5  # 近 N 根窄幅震荡（振幅≤容差×1.5）
+    ok41 = bool(near1 and stall)
+    dev1 = abs((price - e1618) / price * 100) if (e1618 and price) else None
+    d41 = (f"现价 {rnd(price, 3)} 距 1.618 扩展位 {rnd(e1618, 3)} {_fp_num(dev1, 2)}%（容差 {tol * 100:g}%），"
+           f"近 {stall_bars} 根振幅 {_fp_num(seg_span, 2)}% → {'遇阻震荡' if ok41 else '未构成遇阻'}")
+    fails = 0
+    if e2618:
+        for i in range(max(0, len(df) - look), len(df)):
+            hi, cl = num(df['high'].iloc[i]), num(df['close'].iloc[i])
+            if hi is not None and hi >= e2618 * (1 - tol) and (cl is None or cl < e2618):
+                fails += 1
+    need2 = int(pget('wp_ext2_fail_min', 2))
+    ok42 = bool(e2618 and fails >= need2)
+    d42 = (f"2.618 扩展位 {rnd(e2618, 3)}，窗口内盘中触及±{tol * 100:g}%内 {fails} 次且收盘未站上（需≥{need2}次）"
+           if e2618 else '未配置 2.618 比例')
+    return _wp_group([_wp_item('w4_1', ok41, d41), _wp_item('w4_2', ok42, d42)], facts)
+
+
+def wp_candle_top(df, ind):
+    """W5 高位看跌 K 线形态：黄昏星/看跌吞没/乌云盖顶/射击之星；非阶段高位一律不计分"""
+    price = num(df['close'].iloc[-1])
+    high60 = ind.get('high60')
+    hv_zone = float(pget('wp_high_zone_pct', 3)) / 100
+    at_high = None not in (price, high60) and high60 > 0 and price >= high60 * (1 - hv_zone)
+    o, h, l, c = num(df['open'].iloc[-1]), num(df['high'].iloc[-1]), num(df['low'].iloc[-1]), price
+    po, pc = num(df['open'].iloc[-2]), num(df['close'].iloc[-2])
+    p2o, p2c = num(df['open'].iloc[-3]), num(df['close'].iloc[-3])
+    body_mult = float(pget('wp_shadow_body_mult', 2))
+    hits, geom_note = [], ''
+    if None not in (o, h, l, c) and h > l:
+        body = abs(c - o)
+        body_eff = max(body, c * 0.001)
+        upper = h - max(o, c)
+        geom_note = f"实体 {_fp_num(body_eff, 3)}，上影 {_fp_num(upper, 3)}"
+        if c < o and upper >= body_eff * body_mult:
+            hits.append('射击之星')
+        if None not in (po, pc) and pc > po and c < o and c < (po + pc) / 2 and o > pc:
+            hits.append('乌云盖顶')
+        if None not in (po, pc) and pc > po and c < o and o >= pc and c < po:
+            hits.append('看跌吞没')
+        if None not in (p2o, p2c) and p2c > p2o and abs(pc - po) <= (p2c - p2o) * 0.4 and c < o and c < (p2o + p2c) / 2:
+            hits.append('黄昏星')
+    ok5 = bool(at_high and hits)
+    if not at_high:
+        gap = (1 - price / high60) * 100 if (price and high60) else None
+        detail = f"现价距 60 日高 {_fp_num(gap, 1)}%，超出高位区 {hv_zone * 100:g}%，非阶段高位不计分"
+    else:
+        detail = (f"处于阶段高位（距 60 日高≤{hv_zone * 100:g}%），命中形态：{'/'.join(hits) if hits else '无'}；{geom_note or 'K 线数据不足'}")
+    facts = {"at_high": at_high, "patterns": hits, "close": rnd(price, 3), "high60": rnd(high60, 3)}
+    return _wp_group([_wp_item('w5_1', ok5, detail)], facts)
+
+
+def wp_box_fail(df, ind):
+    """W6 箱体突破失败/上沿反复承压：振幅不足有效箱体整组不生效"""
+    win = max(3, int(pget('wp_box_window', 20)))
+    min_amp = float(pget('wp_box_min_amp_pct', 4))
+    touch_min = int(pget('wp_box_touch_min', 3))
+    fake_days = max(1, int(pget('wp_fake_break_days', 5)))
+    fake_back = float(pget('wp_fake_back_pct', 1)) / 100
+    seg = df.tail(win + 1).reset_index(drop=True)
+    top, bottom = num(seg['high'].iloc[:-1].max()), num(seg['low'].iloc[:-1].min())
+    price = num(df['close'].iloc[-1])
+    amp_pct = (top - bottom) / bottom * 100 if (top is not None and bottom and bottom > 0) else None
+    facts = {"window": win, "box_top": rnd(top, 3), "box_bottom": rnd(bottom, 3), "amp_pct": rnd(amp_pct, 2)}
+    if amp_pct is None or amp_pct < min_amp:
+        return _wp_group([_wp_item('w6_1', False, '不构成有效箱体，本组不生效'),
+                          _wp_item('w6_2', False, '不构成有效箱体，本组不生效')],
+                         facts, applicable=False, note='箱体振幅不足（<' + f'{min_amp:g}%' + '），本组不生效不计分')
+    touches = closes_above = 0
+    for i in range(len(seg)):
+        hi, cl = num(seg['high'].iloc[i]), num(seg['close'].iloc[i])
+        if hi is not None and hi >= top * 0.99:
+            touches += 1
+        if cl is not None and cl > top:
+            closes_above += 1
+    ok61 = touches >= touch_min and closes_above == 0
+    d61 = f"近 {win + 1} 根盘中触及上沿 {top:.3}×0.99 共 {touches} 次（需≥{touch_min}），收盘站上 {closes_above} 次（需 0）"
+    ok62, d62 = False, f'近 {fake_days} 根内无“收盘破上沿后又跌回”'
+    tail = df.tail(fake_days + 2).reset_index(drop=True)
+    broke_idx = [i for i in range(len(tail)) if num(tail['close'].iloc[i]) is not None and num(tail['close'].iloc[i]) > top]
+    if broke_idx:
+        after = [num(tail['close'].iloc[i]) for i in range(broke_idx[0] + 1, len(tail))]
+        ok62 = any(x is not None and x < top * (1 - fake_back) for x in after)
+        if ok62:
+            d62 = f"曾收盘突破上沿 {rnd(top, 3)}，随后收盘跌回超 {fake_back * 100:g}%（假突破）"
+    return _wp_group([_wp_item('w6_1', ok61, d61), _wp_item('w6_2', ok62, d62)], facts)
+
+
+def wp_macd_div(df, ind):
+    """W7 MACD 顶背离：复用追资金 detect_top_divergence，价创新高 DIF 未创新高"""
+    look = int(pget('wp_div_lookback', 60))
+    div, text, marks = detect_top_divergence(df, look)
+    facts = {"lookback": look, "divergence": div, "marks": marks}
+    return _wp_group([_wp_item('w7_1', div, text)], facts)
+
+
+def wp_gain_risk(df, ind):
+    """W8 阶段累计涨幅高位风险：wp_gain_period 日涨幅分两档（互斥）"""
+    period = max(5, int(pget('wp_gain_period', 60)))
+    r1 = pget('wp_gain_range1', [80, 150]) or [80, 150]
+    r2 = float(pget('wp_gain_range2', 150))
+    price = num(df['close'].iloc[-1])
+    ref = num(df['close'].iloc[-(period + 1)]) if len(df) > period else None
+    gain = (price / ref - 1) * 100 if (price and ref) else None
+    facts = {"period": period, "ref_close": rnd(ref, 3), "close": rnd(price, 3), "gain_pct": rnd(gain, 2)}
+    if gain is None:
+        return _wp_group([_wp_item('w8_1', False, f'日线不足 {period} 根，无法算区间涨幅'),
+                          _wp_item('w8_2', False, f'日线不足 {period} 根，无法算区间涨幅')], facts)
+    lo, hi = float(r1[0]), float(r1[1])
+    ok81 = lo <= gain <= hi
+    ok82 = gain > max(hi, r2)
+    base = f"近 {period} 日累计涨幅 {gain:.1f}%（档一 {lo:g}～{hi:g}%，档二 >{r2:g}%）"
+    return _wp_group([_wp_item('w8_1', ok81, base), _wp_item('w8_2', ok82, base)], facts)
+
+
+def sell_modules(df, ind):
+    """
+    招财进宝衰竭止盈 W1～W8 原始判定（只给后端下发 fp_sell_compute=true 时跑，追资金不受影响）
+    返回 {w1..w8: {model:'accumulate', applicable, items, facts, note?}}；日线不足 30 根返回 None（后端按无法判定处理）
+    """
+    if df is None or len(df) < 30:
+        return None
+    return clean({
+        "w1": wp_granville_sell(df, ind),
+        "w2": wp_dow_fail(df, ind),
+        "w3": wp_volume_fail(df, ind),
+        "w4": wp_fib_ext(df, ind),
+        "w5": wp_candle_top(df, ind),
+        "w6": wp_box_fail(df, ind),
+        "w7": wp_macd_div(df, ind),
+        "w8": wp_gain_risk(df, ind),
+    })
+
 # ============================================================ 当日实时合成
 
 def merge_live_bar(df, spot, today_str, elapsed_min):
@@ -1384,6 +2048,11 @@ def run_score(args, now):
             "retrace": rnd((retrace_pct or 0) / 100, 4),
             "fib_info": fib_info,
             "indicators": {k: (rnd(v, 4) if isinstance(v, (int, float)) else v) for k, v in ind.items() if k != 'fib_info'},
+            # 招财进宝 M3~M8 原始判定：只在后端下发 fp_compute=true 时算（追资金不开、零开销），
+            # 本脚本不算分也不读权重，只交「事实 + 命中」，分值/权重在后端 fortune_criteria.json 折算
+            "fortune_modules": (fortune_modules(df, ind) if pget('fp_compute', False) else None),
+            # 衰竭止盈 W1~W8（卖出分）：fp_sell_compute=true（招财进宝下发）才算，同样只交事实与命中，分值在 Node 折算
+            "sell_modules": (sell_modules(df, ind) if pget('fp_sell_compute', False) else None),
             "chip": ctx.get('chip'),
             "fund_flow": {
                 "sector_today_net": (sector_map.get(sec) or {}).get('net_inflow_yi'),
@@ -1619,6 +2288,16 @@ action=snapshot（定格快照，只 1 只）额外字段：
      auto_score, max_auto_score, score_detail[{code,label,met,detail}],
      red_lines[{code,label,mode,detail}], eliminated,
      dow_trend, retrace, fib_info{}, indicators{}, chip{}, fund_flow{},
+     fortune_modules{ module_code(volume_price/ma/dmi/fib/box/candle) :
+            { model: 'accumulate'|'tier',
+              items: [{id, met, type?, detail}],        # accumulate 给全部子项；tier 只给命中那一项
+              state: '<命中档位 item id>'|null,          # tier 型专用；null = 数据不足，后端不把这个模块计入分母
+              state_label?, facts{原始数值}, note? }
+            仅 fp_compute=true（招财进宝下发）时非 null }
+     sell_modules{ module_code(w1~w8) :
+            { model: 'accumulate', applicable: true|false,   # false = 无清晰波段/箱体结构，本组不生效不计分
+              items: [{id, met, detail}], facts{原始数值}, note? }
+            仅 fp_sell_compute=true（招财进宝下发）时非 null；后端 foldSellModules 按库中分值折算衰竭总分 }
      weakest_gap, data_as_of, manual_check_codes[],
      kline{ dates[], bars[[开,收,低,高,量,额,换手,涨幅]], ma{ma5,ma20,ma30}, volume[], macd{},
             marks[{date,kind,price,text}], overlays[], today_live, vol_scale, panel{} }

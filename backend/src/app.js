@@ -216,6 +216,27 @@ async function testConnection() {
       console.error('⚠️ [追资金] 规则/定时初始化失败:', e.message);
     }
 
+    // fortune_criteria.type 枚举补充（sell_auto 衰竭 W 组 / reversal_auto 反转 B 组）：sync() 不会改已存在表的 ENUM，
+    // 不扩枚举会导致播种新组时被 MySQL 截断成空串，买入/卖出/反转分组过滤全部失效
+    try {
+      const WANT_TYPES = ['manual', 'auto', 'semi', 'sell_auto', 'reversal_auto'];
+      const [typeCol] = await sequelize.query(
+        `SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS 
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'fortune_criteria' AND COLUMN_NAME = 'type'`
+      );
+      const curType = String((typeCol[0] || {}).COLUMN_TYPE || '');
+      const missing = WANT_TYPES.filter(t => !curType.includes(`'${t}'`));
+      if (typeCol.length && missing.length) {
+        await sequelize.query(
+          `ALTER TABLE fortune_criteria MODIFY COLUMN type ENUM(${WANT_TYPES.map(t => `'${t}'`).join(',')}) NULL DEFAULT 'manual' \
+           COMMENT 'manual=纯主观；auto=可自动判定；semi=机器预警+人工确认；sell_auto=衰竭止盈 W 组；reversal_auto=超跌反转 B 组'`
+        );
+        console.log(`✅ fortune_criteria 表 type 列枚举已扩充 ${missing.join(', ')}`);
+      }
+    } catch (e) {
+      console.error('⚠️ fortune_criteria 表 type 枚举扩充失败（W/B 组播种会受影响）:', e.message);
+    }
+
     // 初始化「胡胖胖招财进宝」：判定项真源文件播种到 fortune_criteria 表
     try {
       const fortune = require('./services/fortuneService');
