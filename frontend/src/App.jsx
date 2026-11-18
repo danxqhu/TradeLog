@@ -8,6 +8,8 @@ import News from './pages/News'
 import Features from './pages/Features'
 import Recommendation from './pages/Recommendation'
 import RecommendationDetail from './pages/Recommendation/Detail'
+import WatchlistAnalysis from './pages/WatchlistAnalysis'
+import WatchlistAnalysisDetail from './pages/WatchlistAnalysis/Detail'
 import VolumeAnalysis from './pages/Volume/Analysis'
 import VolumeRealtime from './pages/Volume/Realtime'
 import Position from './pages/Position'
@@ -64,6 +66,10 @@ function App() {
           {/* 推荐管理 */}
           <Route path="/recommendation" element={<Recommendation />} />
           <Route path="/recommendation/:id" element={<RecommendationDetail />} />
+
+          {/* 自选股分析（同推荐管理，早盘→自选股，午盘→统计待开发） */}
+          <Route path="/watchlist-analysis" element={<WatchlistAnalysis />} />
+          <Route path="/watchlist-analysis/:id" element={<WatchlistAnalysisDetail />} />
 
           {/* 量能分析 */}
           <Route path="/volume/analysis" element={<VolumeAnalysis />} />

@@ -11,6 +11,7 @@ const defaultFeatures = [
   { key: 'shao', title: '邵先生', desc: '邵先生专区', path: '/shao', color: '#ff6b81' },
   { key: 'finance-report', title: '财报分析', desc: '财务报表深度解析', path: '/finance-report', color: '#5b8c00' },
   { key: 'recommendation', title: '推荐管理', desc: '早盘/午盘推荐记录', path: '/recommendation', color: '#1677ff' },
+  { key: 'watchlist-analysis', title: '自选股分析', desc: '自选股跟踪分析', path: '/watchlist-analysis', color: '#99363E' },
   { key: 'volume-analysis', title: '量能分析', desc: '30日量能平均值', path: '/volume/analysis', color: '#ff8f1f' },
   { key: 'volume-realtime', title: '实时放量缩量', desc: '类似同花顺', path: '/volume/realtime', color: '#e74c3c' },
   { key: 'position', title: '仓位管理', desc: '阶梯式加仓策略', path: '/position', color: '#9c27b0' },

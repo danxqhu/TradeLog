@@ -35,6 +35,7 @@ app.use(authenticateToken);
 // 业务路由
 app.use('/api/stocks', require('./routes/stocks'));
 app.use('/api/recommendations', require('./routes/recommendations'));
+app.use('/api/watchlist-analysis', require('./routes/watchlistAnalysis'));
 app.use('/api/volume', require('./routes/volume'));
 app.use('/api/positions', require('./routes/positions'));
 app.use('/api/shanghai-news', require('./routes/shanghaiNews'));
@@ -166,6 +167,33 @@ async function testConnection() {
       }
     } catch (e) {
       console.error('⚠️ recommendations 表新增列失败（可能已存在）:', e.message);
+    }
+
+    // 手动补充 watchlist_analysis 表新增的 K 线汇总缓存列（自选股详情页）
+    try {
+      const [colsWa] = await sequelize.query(
+        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'watchlist_analysis'`
+      );
+      const colNamesWa = new Set(colsWa.map(c => c.COLUMN_NAME));
+      const waCols = [
+        { name: 'best_close_date', sql: `ALTER TABLE watchlist_analysis ADD COLUMN best_close_date DATE NULL COMMENT '区间最高收盘价对应日期'` },
+        { name: 'best_close_price', sql: `ALTER TABLE watchlist_analysis ADD COLUMN best_close_price DECIMAL(10,2) NULL COMMENT '区间最高收盘价'` },
+        { name: 'best_close_return', sql: `ALTER TABLE watchlist_analysis ADD COLUMN best_close_return DECIMAL(8,2) NULL COMMENT '最高收盘价收益率%'` },
+        { name: 'best_high_date', sql: `ALTER TABLE watchlist_analysis ADD COLUMN best_high_date DATE NULL COMMENT '区间盘中最高价对应日期'` },
+        { name: 'best_high_price', sql: `ALTER TABLE watchlist_analysis ADD COLUMN best_high_price DECIMAL(10,2) NULL COMMENT '区间盘中最高价'` },
+        { name: 'best_high_return', sql: `ALTER TABLE watchlist_analysis ADD COLUMN best_high_return DECIMAL(8,2) NULL COMMENT '盘中最高价收益率%'` },
+        { name: 'kline_refreshed_date', sql: `ALTER TABLE watchlist_analysis ADD COLUMN kline_refreshed_date DATE NULL COMMENT 'K线数据最近一次刷新日，同天不重复拉接口'` },
+        { name: 'sector', sql: `ALTER TABLE watchlist_analysis ADD COLUMN sector VARCHAR(60) NOT NULL DEFAULT '' COMMENT '板块/行业（人工填写，留空时自动回填）'` },
+      ];
+      for (const col of waCols) {
+        if (!colNamesWa.has(col.name)) {
+          await sequelize.query(col.sql);
+          console.log(`✅ watchlist_analysis 表新增 ${col.name} 列`);
+        }
+      }
+    } catch (e) {
+      console.error('⚠️ watchlist_analysis 表新增列失败（可能已存在）:', e.message);
     }
 
     // 手动补充 position_configs 表新增的列（策略升级）

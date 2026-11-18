@@ -26,6 +26,9 @@ const MoneyChaseSnapshot = require('./MoneyChaseSnapshot');
 const FortuneCriterion = require('./FortuneCriterion');
 const FortuneStock = require('./FortuneStock');
 const FortuneEvaluation = require('./FortuneEvaluation');
+const WatchlistAnalysis = require('./WatchlistAnalysis');
+const WatchlistAnalysisTracking = require('./WatchlistAnalysisTracking');
+const WatchlistKlinePeriod = require('./WatchlistKlinePeriod');
 
 // 模型关联关系
 // Recommendation -> RecommendationTracking (一对多)
@@ -82,6 +85,26 @@ NewsStock.belongsTo(Stock, {
   as: 'stock',
 });
 
+// WatchlistAnalysis -> WatchlistAnalysisTracking (一对多，复制自推荐管理关联结构)
+WatchlistAnalysis.hasMany(WatchlistAnalysisTracking, {
+  foreignKey: 'analysis_id',
+  as: 'trackings',
+});
+WatchlistAnalysisTracking.belongsTo(WatchlistAnalysis, {
+  foreignKey: 'analysis_id',
+  as: 'analysis',
+});
+
+// WatchlistAnalysis -> WatchlistKlinePeriod (一对多，自选股详情页按周期缓存 K 线开/高/收与收益率)
+WatchlistAnalysis.hasMany(WatchlistKlinePeriod, {
+  foreignKey: 'analysis_id',
+  as: 'klinePeriods',
+});
+WatchlistKlinePeriod.belongsTo(WatchlistAnalysis, {
+  foreignKey: 'analysis_id',
+  as: 'analysis',
+});
+
 // MoneyChaseRun -> MoneyChaseCandidate (一对多，批次-候选股)
 MoneyChaseRun.hasMany(MoneyChaseCandidate, {
   foreignKey: 'run_id',
@@ -133,4 +156,7 @@ module.exports = {
   FortuneCriterion,
   FortuneStock,
   FortuneEvaluation,
+  WatchlistAnalysis,
+  WatchlistAnalysisTracking,
+  WatchlistKlinePeriod,
 };

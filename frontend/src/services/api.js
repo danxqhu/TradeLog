@@ -60,6 +60,18 @@ export const recommendationApi = {
   calculateCustom: (id, data) => api.post(`/recommendations/${id}/calculate-custom`, data),
 }
 
+// ===== 自选股分析 =====
+export const watchlistAnalysisApi = {
+getList: (params) => api.get('/watchlist-analysis', { params }),
+getById: (id) => api.get(`/watchlist-analysis/${id}`),
+getDateStats: (params) => api.get('/watchlist-analysis/date-stats', { params }),
+getSectorOptions: () => api.get('/watchlist-analysis/sector-options'),
+getKlineStats: (id, params) => api.get(`/watchlist-analysis/${id}/kline-stats`, { params }),
+create: (data) => api.post('/watchlist-analysis', data),
+update: (id, data) => api.put(`/watchlist-analysis/${id}`, data),
+delete: (id) => api.delete(`/watchlist-analysis/${id}`),
+}
+
 // ===== 量能数据 =====
 export const volumeApi = {
   getList: (params) => api.get('/volume', { params }),
