@@ -34,6 +34,7 @@ app.use(authenticateToken);
 
 // 业务路由
 app.use('/api/stocks', require('./routes/stocks'));
+app.use('/api/watchlist', require('./routes/watchlist'));
 app.use('/api/recommendations', require('./routes/recommendations'));
 app.use('/api/watchlist-analysis', require('./routes/watchlistAnalysis'));
 app.use('/api/volume', require('./routes/volume'));

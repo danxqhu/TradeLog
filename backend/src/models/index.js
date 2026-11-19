@@ -29,6 +29,8 @@ const FortuneEvaluation = require('./FortuneEvaluation');
 const WatchlistAnalysis = require('./WatchlistAnalysis');
 const WatchlistAnalysisTracking = require('./WatchlistAnalysisTracking');
 const WatchlistKlinePeriod = require('./WatchlistKlinePeriod');
+const WatchlistStock = require('./WatchlistStock');
+const StockMinuteTurnover = require('./StockMinuteTurnover');
 
 // 模型关联关系
 // Recommendation -> RecommendationTracking (一对多)
@@ -159,4 +161,6 @@ module.exports = {
   WatchlistAnalysis,
   WatchlistAnalysisTracking,
   WatchlistKlinePeriod,
+  WatchlistStock,
+  StockMinuteTurnover,
 };

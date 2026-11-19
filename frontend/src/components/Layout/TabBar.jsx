@@ -1,7 +1,7 @@
 import React from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { TabBar as AntTabBar } from 'antd-mobile'
-import { APP_VERSION } from '../../version'
+import { APP_VERSION, APP_UPDATE_TIME } from '../../version'
 import {
   AppOutline,
   StarOutline,
@@ -40,7 +40,7 @@ export default function TabBar() {
         padding: '2px 0',
         letterSpacing: 0.5,
       }}>
-        {APP_VERSION}
+        {APP_VERSION} · 更新于 {APP_UPDATE_TIME}
       </div>
       <AntTabBar
         activeKey={location.pathname}

@@ -45,6 +45,14 @@ export const stockApi = {
   delete: (code) => api.delete(`/stocks/${code}`),
 }
 
+// ===== 自选股 =====
+export const watchlistApi = {
+  getList: () => api.get('/watchlist'),
+  add: (code) => api.post('/watchlist', { code }),
+  remove: (code) => api.delete(`/watchlist/${code}`),
+  getTimeline: (code, date) => api.get(`/watchlist/${code}/timeline`, { params: date ? { date } : {} }),
+}
+
 // ===== 推荐记录 =====
 export const recommendationApi = {
   getList: (params) => api.get('/recommendations', { params }),

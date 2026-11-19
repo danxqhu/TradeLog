@@ -11,6 +11,8 @@
  *   6. ~~交易所官网成交额抓取~~ 已废弃，卡片4改用 AKShare 数据，不再直接抓交易所官网
  *   7. 每日追资金：节点时间由页面配置（money_chase_schedules 表，默认 9:50 / 10:00），
  *      配置变更后由路由调用 reloadMoneyChaseSchedules() 热更新，无需重启服务
+ *   8. 自选股分钟成交额：交易时段每分钟 :05 秒采集入库 stock_minute_turnovers
+ *      （09:25 竞价快照 + 9:30-11:30/13:00-15:00 全分钟回填，数据源新浪，逐只限速 300ms）
  *
  * 规则：
  *   - 禁止 setInterval / setTimeout 做分钟级轮询（防时间漂移）
@@ -25,6 +27,7 @@ const marketDataService = require('./marketDataService');
 const stockDictionary = require('./stockDictionary');
 const positionAlertService = require('./positionAlertService');
 const moneyChaseService = require('./moneyChaseService');
+const watchlistTurnoverService = require('./watchlistTurnoverService');
 const { MarketSnapshot, MoneyChaseSchedule } = require('../models');
 const marketRoute = require('../routes/market');
 
@@ -246,6 +249,18 @@ async function reloadMoneyChaseSchedules() {
   }
 }
 
+/**
+ * 任务 8：自选股分钟成交额采集（交易时段每分钟 :05，具体窗口/交易日过滤在服务内完成）
+ * 单只失败不单独重试：下一分钟的 K 线全量回填会顺带补齐缺掉的分钟
+ */
+async function runWatchlistMinuteCollect() {
+  try {
+    await watchlistTurnoverService.collectMinute();
+  } catch (err) {
+    console.error('📈 [自选分钟采集] 任务失败:', err.message);
+  }
+}
+
 // ==================== 启动调度器 ====================
 
 function startScheduler() {
@@ -266,6 +281,19 @@ function startScheduler() {
     cron.schedule(expr, () => collectSnapshot(), { timezone: TZ });
   });
   console.log('   💹 成交额快照：交易时段 9:25/9:30-11:30/13:00-15:00（每分钟 :05 秒）');
+
+  // ---- 自选股分钟成交额：同样只在交易时段 :05 秒触发（6 字段 cron） ----
+  const watchlistCrons = [
+    '5 25 9 * * 1-5',     // 09:25:05 集合竞价快照
+    '5 30-59 9 * * 1-5',  // 09:30-09:59
+    '5 * 10-11 * * 1-5',  // 10:00-11:59（服务内精确过滤到 11:30）
+    '5 * 13-14 * * 1-5',  // 13:00-14:59
+    '5 0 15 * * 1-5',     // 15:00:05 收盘采集
+  ];
+  watchlistCrons.forEach(expr => {
+    cron.schedule(expr, () => runWatchlistMinuteCollect(), { timezone: TZ });
+  });
+  console.log('   📈 自选股分钟成交额：交易时段 9:25/9:30-11:30/13:00-15:00（每分钟 :05 秒入库）');
 
   // ---- 上海证券报：每天 3:00、6:00 ----
   cron.schedule('0 3,6 * * *', () => runScrape(), { timezone: TZ });

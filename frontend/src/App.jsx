@@ -1,10 +1,11 @@
 import React, { Suspense, lazy } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import TabBar from './components/Layout/TabBar'
-import { APP_VERSION } from './version'
+import { APP_VERSION, APP_UPDATE_TIME } from './version'
 import { useAuth } from './utils/AuthContext'
 import Home from './pages/Home'
 import Watchlist from './pages/Watchlist'
+import WatchlistStockDetail from './pages/Watchlist/StockDetail'
 import News from './pages/News'
 import Features from './pages/Features'
 import Recommendation from './pages/Recommendation'
@@ -62,7 +63,7 @@ function App() {
           letterSpacing: 0.5,
           pointerEvents: 'none',
         }}>
-          {APP_VERSION}
+          {APP_VERSION} · 更新于 {APP_UPDATE_TIME}
         </div>
       </>
     )
@@ -76,6 +77,7 @@ function App() {
           {/* 底部Tab页 */}
           <Route path="/" element={<Home />} />
           <Route path="/watchlist" element={<Watchlist />} />
+          <Route path="/watchlist/:code" element={<WatchlistStockDetail />} />
           <Route path="/news" element={<News />} />
           <Route path="/features" element={<Features />} />
 
