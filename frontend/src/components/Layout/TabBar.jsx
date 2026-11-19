@@ -1,6 +1,7 @@
 import React from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { TabBar as AntTabBar } from 'antd-mobile'
+import { APP_VERSION } from '../../version'
 import {
   AppOutline,
   StarOutline,
@@ -32,6 +33,15 @@ export default function TabBar() {
       paddingBottom: 'env(safe-area-inset-bottom)',
       zIndex: 100,
     }}>
+      <div style={{
+        textAlign: 'center',
+        fontSize: 10,
+        color: '#bbb',
+        padding: '2px 0',
+        letterSpacing: 0.5,
+      }}>
+        {APP_VERSION}
+      </div>
       <AntTabBar
         activeKey={location.pathname}
         onChange={(key) => navigate(key)}

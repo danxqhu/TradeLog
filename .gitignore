@@ -28,3 +28,6 @@ npm-debug.log*
 
 # Docker 数据
 mysql_data/
+
+# 本地假数据脚本（勿上传）
+backend/generate-mock-timeline.js

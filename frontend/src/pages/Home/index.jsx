@@ -713,6 +713,21 @@ export default function Home() {
                 }
               }
 
+              // 放量/缩量：本行「较昨日此时」数值 与 上一分钟「较昨日此时」数值 对比
+              // 数值变大（如 -78 > -110）=放量，变小=缩量
+              let volumeLabel = null
+              if (changeVsYesterday !== null && prevSnap && yesterdayData.snapshots && yesterdayData.snapshots.length > 0) {
+                const prevYSnap = yesterdayData.snapshots.find(s => s.snapshot_time === prevSnap.snapshot_time)
+                if (prevYSnap) {
+                  const prevChangeVsYesterday = Number(prevSnap.total_turnover) - Number(prevYSnap.total_turnover)
+                  if (changeVsYesterday > prevChangeVsYesterday) {
+                    volumeLabel = { text: '放量', color: '#e74c3c' }
+                  } else if (changeVsYesterday < prevChangeVsYesterday) {
+                    volumeLabel = { text: '缩量', color: '#27ae60' }
+                  }
+                }
+              }
+
               const prevColor = changeVsPrev > 0 ? '#e74c3c' : changeVsPrev < 0 ? '#27ae60' : '#999'
               const yestColor = changeVsYesterday > 0 ? '#e74c3c' : changeVsYesterday < 0 ? '#27ae60' : '#999'
 
@@ -738,6 +753,11 @@ export default function Home() {
                   {changeVsYesterday !== null && changeVsYesterday !== 0 && (
                     <span style={{ color: yestColor }}>
                       较昨日此时: {formatIncrement(changeVsYesterday).text}
+                    </span>
+                  )}
+                  {volumeLabel && (
+                    <span style={{ fontWeight: 600, color: volumeLabel.color }}>
+                      {volumeLabel.text}
                     </span>
                   )}
                   <span style={{ marginLeft: 'auto', fontWeight: 600, fontSize: 12, color: '#333' }}>

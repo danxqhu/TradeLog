@@ -22,7 +22,7 @@ html, body {
 .page-container {
   flex: 1;
   padding: 12px;
-  padding-bottom: 70px; /* 为底部TabBar留空间 */
+  padding-bottom: 88px; /* 为底部TabBar（含版本号行）留空间 */
   overflow-y: auto;
 }
 

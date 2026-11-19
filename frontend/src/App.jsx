@@ -1,6 +1,7 @@
 import React, { Suspense, lazy } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import TabBar from './components/Layout/TabBar'
+import { APP_VERSION } from './version'
 import { useAuth } from './utils/AuthContext'
 import Home from './pages/Home'
 import Watchlist from './pages/Watchlist'
@@ -43,12 +44,27 @@ function App() {
   // 未登录：只显示认证页面
   if (!isLoggedIn) {
     return (
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="/register" element={<Register />} />
-        <Route path="/forgot-password" element={<ForgotPassword />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
-      </Routes>
+      <>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="*" element={<Navigate to="/login" replace />} />
+        </Routes>
+        <div style={{
+          position: 'fixed',
+          bottom: 8,
+          left: 0,
+          right: 0,
+          textAlign: 'center',
+          fontSize: 10,
+          color: '#bbb',
+          letterSpacing: 0.5,
+          pointerEvents: 'none',
+        }}>
+          {APP_VERSION}
+        </div>
+      </>
     )
   }
 
