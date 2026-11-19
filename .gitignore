@@ -9,7 +9,8 @@ frontend/node_modules/
 backend/node_modules/
 
 # 构建产物
-frontend/dist/
+# 部署走 deploy 分支携带 frontend/dist 产物（服务器不构建前端），不要忽略
+# frontend/dist/
 frontend/build/
 
 # IDE
